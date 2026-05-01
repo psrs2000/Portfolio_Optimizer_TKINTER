@@ -1,4 +1,4 @@
-**Otimizador de Portfólio**
+**Otimizador de Portfólio** Portfolio Optimizer
 
 Versão Desktop - Manual do Usuário
 
