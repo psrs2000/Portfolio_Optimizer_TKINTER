@@ -1950,6 +1950,7 @@ class PortfolioOptimizerGUI(QMainWindow):
 
         if not self.individual_constraints:
             self.constraints_summary_layout.addWidget(QLabel("Nenhuma restrição individual configurada"))
+            self.constraints_summary_layout.addStretch()
             return
 
         for asset, limits in self.individual_constraints.items():
@@ -1959,6 +1960,7 @@ class PortfolioOptimizerGUI(QMainWindow):
         total = QLabel(f"Total: {len(self.individual_constraints)} ativos com limites específicos")
         total.setFont(bold())
         self.constraints_summary_layout.addWidget(total)
+        self.constraints_summary_layout.addStretch()
 
     # -------------------------------------------------------------------------
     # SHORT SELLING
@@ -2143,6 +2145,7 @@ class PortfolioOptimizerGUI(QMainWindow):
 
         if not self.short_weights:
             self.short_summary_layout.addWidget(QLabel("Nenhum ativo short configurado"))
+            self.short_summary_layout.addStretch()
             return
 
         for asset, weight in self.short_weights.items():
@@ -2152,6 +2155,7 @@ class PortfolioOptimizerGUI(QMainWindow):
         total = QLabel(f"Total Short: {total_short:.1f}%")
         total.setFont(bold())
         self.short_summary_layout.addWidget(total)
+        self.short_summary_layout.addStretch()
 
     def toggle_individual_constraints(self):
         self.update_constraints_widgets()
