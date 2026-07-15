@@ -2840,20 +2840,28 @@ Isso ajuda a detectar:
         content_l.addLayout(left, 3)
         content_l.addLayout(right, 2)
 
-        # Grid de parâmetros
+        # Grid de parâmetros (linhas 0/1 expandem; conteúdo ancorado no topo-esquerda)
         params_grid = QGridLayout()
-        left.addLayout(params_grid)
+        params_grid.setColumnStretch(0, 1)
+        params_grid.setColumnStretch(1, 1)
+        params_grid.setRowStretch(0, 1)
+        params_grid.setRowStretch(1, 1)
+        left.addLayout(params_grid, 1)
 
         # 1. Janelas de Otimização
         otim_box = QGroupBox("📅 Janelas de Otimização")
-        otim_l = QGridLayout(otim_box)
+        otim_outer = QVBoxLayout(otim_box)
+        otim_grid = QGridLayout()
+        otim_grid.setColumnStretch(3, 1)  # empurra checkboxes para a esquerda
+        otim_outer.addLayout(otim_grid)
+        otim_outer.addStretch()
         self.otim_windows = {}
         for i, (period, default) in enumerate([('3m', False), ('6m', True), ('1a', True),
                                                ('2a', False), ('3a', False)]):
             cb = QCheckBox(period)
             cb.setChecked(default)
             r, c = divmod(i, 3)
-            otim_l.addWidget(cb, r, c)
+            otim_grid.addWidget(cb, r, c)
             self.otim_windows[period] = BoolVar(cb)
         params_grid.addWidget(otim_box, 0, 0)
 
@@ -2864,7 +2872,9 @@ Isso ajuda a detectar:
         hint.setStyleSheet("color: gray;")
         valid_l.addWidget(hint)
         valid_grid = QGridLayout()
+        valid_grid.setColumnStretch(2, 1)  # empurra checkboxes para a esquerda
         valid_l.addLayout(valid_grid)
+        valid_l.addStretch()
         self.rebalance_periods = {}
         period_labels = {'1sem': '1 semana', '2sem': '2 semanas', '1mes': '1 mês',
                          '2mes': '2 meses', '3mes': '3 meses'}
@@ -2889,6 +2899,7 @@ Isso ajuda a detectar:
             cb.setChecked(default)
             obj_l.addWidget(cb)
             self.objectives[key] = BoolVar(cb)
+        obj_l.addStretch()
         params_grid.addWidget(obj_box, 1, 0)
 
         # 4. Posições Vendidas
@@ -2901,6 +2912,8 @@ Isso ajuda a detectar:
 
         self.auto_shorts_config = QWidget()
         asc_l = QGridLayout(self.auto_shorts_config)
+        asc_l.setContentsMargins(0, 0, 0, 0)
+        asc_l.setColumnStretch(2, 1)  # mantém rótulo/campo à esquerda
         asc_l.addWidget(QLabel("Ativo:"), 0, 0)
         e_short_asset = QLineEdit("BOVA11")
         e_short_asset.setFixedWidth(90)
@@ -2912,12 +2925,14 @@ Isso ajuda a detectar:
         self.short_weight_var = NumVar(e_short_weight, -100.0)
         asc_l.addWidget(e_short_weight, 1, 1)
         short_l.addWidget(self.auto_shorts_config)
+        short_l.addStretch()
         self.auto_shorts_config.setEnabled(False)
         params_grid.addWidget(short_box, 1, 1)
 
         # 5. Configurações Globais
         config_box = QGroupBox("⚙️ Configurações Globais")
         config_l = QHBoxLayout(config_box)
+        config_l.setAlignment(Qt.AlignTop)
 
         cfg_left = QVBoxLayout()
         lbl_rank = QLabel("🏆 Ranking de Ativos (por Score):")
@@ -2937,7 +2952,7 @@ Isso ajuda a detectar:
         rank_l.addWidget(QLabel("(0-100)"))
         rank_l.addStretch()
         cfg_left.addLayout(rank_l)
-        config_l.addLayout(cfg_left)
+        config_l.addLayout(cfg_left, 1)
 
         cfg_right = QVBoxLayout()
         lbl_w = QLabel("⚖️ Limites de Peso:")
@@ -2957,7 +2972,7 @@ Isso ajuda a detectar:
         weight_l.addWidget(QLabel("%"))
         weight_l.addStretch()
         cfg_right.addLayout(weight_l)
-        config_l.addLayout(cfg_right)
+        config_l.addLayout(cfg_right, 1)
 
         params_grid.addWidget(config_box, 2, 0, 1, 2)
 
