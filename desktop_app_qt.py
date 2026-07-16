@@ -668,6 +668,7 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.status_processamento = QLabel("")
         self.status_processamento.setWordWrap(True)
         temp_l.addWidget(self.status_processamento)
+        temp_l.addStretch()
 
         left.addWidget(temp_box, 1)
 
@@ -1697,6 +1698,7 @@ class PortfolioOptimizerGUI(QMainWindow):
 
                 self.update_advanced_widgets()
                 self.atualizar_datas_automaticas()
+                self._update_selection_info()
 
                 messagebox.showinfo("Sucesso", "📥 Dados brutos carregados!\n🎯 Agora configure as janelas temporais.")
 
