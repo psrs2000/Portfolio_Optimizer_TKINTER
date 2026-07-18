@@ -334,13 +334,14 @@ class PortfolioOptimizer:
             {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
         ]
 
-        # META DE RETORNO (opcional): exige excesso do período >= target_return
-        # excess_return = retorno total do período - referência do período
+        # META DE RETORNO (opcional): exige retorno do período >= referência × (1 + meta)
+        # Ex.: referência 12% e meta 5% -> alvo = 0.12 × 1.05 = 0.126 (12,6%)
         meta_used = target_return is not None
+        meta_required = risk_free_rate * (1 + target_return) if meta_used else None
         if meta_used:
             constraints.append({
                 'type': 'ineq',
-                'fun': lambda w: self.calculate_portfolio_metrics(w, risk_free_rate)['excess_return'] - target_return
+                'fun': lambda w: self.calculate_portfolio_metrics(w, risk_free_rate)['gv_final'] - meta_required
             })
         
         # Limites para cada peso
@@ -380,7 +381,7 @@ class PortfolioOptimizer:
             if meta_used:
                 if result.success:
                     m = self.calculate_portfolio_metrics(result.x, risk_free_rate)
-                    meta_atingida = m['excess_return'] >= target_return - 1e-6
+                    meta_atingida = m['gv_final'] >= meta_required - 1e-6
                 else:
                     meta_atingida = False
                 if not meta_atingida:
@@ -404,8 +405,10 @@ class PortfolioOptimizer:
                 if meta_used:
                     out['meta_used'] = True
                     out['meta_target'] = target_return
-                    out['meta_excess'] = metrics['excess_return']
-                    out['meta_atingida'] = metrics['excess_return'] >= target_return - 1e-6
+                    out['meta_required'] = meta_required
+                    out['meta_achieved'] = metrics['gv_final']
+                    out['meta_ref'] = risk_free_rate
+                    out['meta_atingida'] = metrics['gv_final'] >= meta_required - 1e-6
                 return out
             else:
                 return {
@@ -498,12 +501,13 @@ class PortfolioOptimizer:
             {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
         ]
 
-        # META DE RETORNO (opcional): excesso do período >= target_return
+        # META DE RETORNO (opcional): retorno do período >= referência × (1 + meta)
         meta_used = target_return is not None
+        meta_required = risk_free_rate * (1 + target_return) if meta_used else None
         if meta_used:
             constraints.append({
                 'type': 'ineq',
-                'fun': lambda w: self.calculate_portfolio_metrics(_full_weights(w), risk_free_rate)['excess_return'] - target_return
+                'fun': lambda w: self.calculate_portfolio_metrics(_full_weights(w), risk_free_rate)['gv_final'] - meta_required
             })
 
         # Limites para pesos long
@@ -543,7 +547,7 @@ class PortfolioOptimizer:
             if meta_used:
                 if result.success:
                     m = self.calculate_portfolio_metrics(_full_weights(result.x), risk_free_rate)
-                    meta_atingida = m['excess_return'] >= target_return - 1e-6
+                    meta_atingida = m['gv_final'] >= meta_required - 1e-6
                 else:
                     meta_atingida = False
                 if not meta_atingida:
@@ -567,8 +571,10 @@ class PortfolioOptimizer:
                 if meta_used:
                     out['meta_used'] = True
                     out['meta_target'] = target_return
-                    out['meta_excess'] = metrics['excess_return']
-                    out['meta_atingida'] = metrics['excess_return'] >= target_return - 1e-6
+                    out['meta_required'] = meta_required
+                    out['meta_achieved'] = metrics['gv_final']
+                    out['meta_ref'] = risk_free_rate
+                    out['meta_atingida'] = metrics['gv_final'] >= meta_required - 1e-6
                 return out
             else:
                 return {

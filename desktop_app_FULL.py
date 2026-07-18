@@ -984,13 +984,14 @@ class PortfolioOptimizerGUI:
 
         meta_row = ttk.Frame(meta_frame)
         meta_row.pack(fill='x', pady=2)
-        ttk.Label(meta_row, text="Meta (% no período acima da referência):").pack(side='left')
+        ttk.Label(meta_row, text="Meta (% acima da referência):").pack(side='left')
         self.meta_var = tk.DoubleVar(value=5.0)
         ttk.Entry(meta_row, textvariable=self.meta_var, width=8).pack(side='left', padx=(5, 0))
 
         ttk.Label(meta_frame,
-                  text="Combina com o objetivo escolhido acima: maximiza o objetivo garantindo "
-                       "PELO MENOS este excesso sobre a referência no período (mín. risco na prática). "
+                  text="Combina com o objetivo escolhido acima: maximiza o objetivo garantindo retorno "
+                       "de PELO MENOS referência × (1 + meta/100) no período (ex.: referência 12% e meta "
+                       "5% → alvo 12,6%). Na prática é o menor risco que alcança a meta. "
                        "Se a meta for inatingível, retorna a carteira de MAIOR retorno possível e avisa.",
                   font=('TkDefaultFont', 8), foreground='gray',
                   wraplength=700, justify='left').pack(anchor='w', pady=(5, 0))
@@ -2800,12 +2801,15 @@ class PortfolioOptimizerGUI:
         """Texto sobre o resultado da meta (vazio se meta não foi usada)."""
         if not self.result or not self.result.get('meta_used'):
             return ""
-        alvo = self.result['meta_target'] * 100
-        obtido = self.result['meta_excess'] * 100
+        meta = self.result['meta_target'] * 100
+        ref = self.result['meta_ref'] * 100
+        req = self.result['meta_required'] * 100
+        ach = self.result['meta_achieved'] * 100
         if self.result.get('meta_atingida'):
-            return f"\n\n🎯 Meta atingida: excesso no período = {obtido:.2f}% (meta {alvo:.2f}%)."
+            return (f"\n\n🎯 Meta atingida: retorno do período = {ach:.2f}% "
+                    f"(alvo = referência {ref:.2f}% × (1+{meta:.1f}%) = {req:.2f}%).")
         return (f"\n\n⚠️ Meta NÃO atingida com os limites atuais.\n"
-                f"Melhor possível: excesso = {obtido:.2f}% (meta {alvo:.2f}%).")
+                f"Melhor possível: retorno = {ach:.2f}% (alvo = {req:.2f}%).")
 
     def display_results(self):
         """Exibir resultados com layout horizontal (In-Sample | Out-of-Sample | Comparação)"""

@@ -1150,7 +1150,7 @@ class PortfolioOptimizerGUI(QMainWindow):
         meta_l.addWidget(chk_meta)
 
         meta_row = QHBoxLayout()
-        meta_row.addWidget(QLabel("Meta (% no período acima da referência):"))
+        meta_row.addWidget(QLabel("Meta (% acima da referência):"))
         self.meta_entry = QLineEdit()
         self.meta_entry.setFixedWidth(80)
         self.meta_var = NumVar(self.meta_entry, 5.0)
@@ -1159,8 +1159,9 @@ class PortfolioOptimizerGUI(QMainWindow):
         meta_l.addLayout(meta_row)
 
         meta_hint = QLabel(
-            "Combina com o objetivo escolhido acima: maximiza o objetivo garantindo "
-            "PELO MENOS este excesso sobre a referência no período (mín. risco na prática). "
+            "Combina com o objetivo escolhido acima: maximiza o objetivo garantindo retorno "
+            "de PELO MENOS referência × (1 + meta/100) no período (ex.: referência 12% e meta "
+            "5% → alvo 12,6%). Na prática é o menor risco que alcança a meta. "
             "Se a meta for inatingível, retorna a carteira de MAIOR retorno possível e avisa.")
         meta_hint.setStyleSheet("color: gray;")
         meta_hint.setWordWrap(True)
@@ -2559,12 +2560,15 @@ class PortfolioOptimizerGUI(QMainWindow):
         """Texto sobre o resultado da meta (vazio se meta não foi usada)."""
         if not self.result or not self.result.get('meta_used'):
             return ""
-        alvo = self.result['meta_target'] * 100
-        obtido = self.result['meta_excess'] * 100
+        meta = self.result['meta_target'] * 100
+        ref = self.result['meta_ref'] * 100
+        req = self.result['meta_required'] * 100
+        ach = self.result['meta_achieved'] * 100
         if self.result.get('meta_atingida'):
-            return f"\n\n🎯 Meta atingida: excesso no período = {obtido:.2f}% (meta {alvo:.2f}%)."
+            return (f"\n\n🎯 Meta atingida: retorno do período = {ach:.2f}% "
+                    f"(alvo = referência {ref:.2f}% × (1+{meta:.1f}%) = {req:.2f}%).")
         return (f"\n\n⚠️ Meta NÃO atingida com os limites atuais.\n"
-                f"Melhor possível: excesso = {obtido:.2f}% (meta {alvo:.2f}%).")
+                f"Melhor possível: retorno = {ach:.2f}% (alvo = {req:.2f}%).")
 
     def display_results(self):
         if not self.result or not self.result['success']:
