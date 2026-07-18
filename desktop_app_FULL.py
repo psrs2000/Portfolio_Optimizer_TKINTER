@@ -973,7 +973,28 @@ class PortfolioOptimizerGUI:
         self.risk_free_var = tk.DoubleVar(value=0.0)
         self.manual_risk_entry = ttk.Entry(manual_frame, textvariable=self.risk_free_var, width=10)
         self.manual_risk_entry.pack(anchor='w', pady=2)
-        
+
+        # 3b. Meta de Retorno (opcional)
+        meta_frame = ttk.LabelFrame(scrollable_frame, text="🎯 Meta de Retorno (opcional)", padding="10")
+        meta_frame.pack(fill='x', padx=10, pady=5)
+
+        self.use_meta = tk.BooleanVar(value=False)
+        ttk.Checkbutton(meta_frame, text="Exigir meta de retorno mínima",
+                        variable=self.use_meta).pack(anchor='w')
+
+        meta_row = ttk.Frame(meta_frame)
+        meta_row.pack(fill='x', pady=2)
+        ttk.Label(meta_row, text="Meta (% no período acima da referência):").pack(side='left')
+        self.meta_var = tk.DoubleVar(value=5.0)
+        ttk.Entry(meta_row, textvariable=self.meta_var, width=8).pack(side='left', padx=(5, 0))
+
+        ttk.Label(meta_frame,
+                  text="Combina com o objetivo escolhido acima: maximiza o objetivo garantindo "
+                       "PELO MENOS este excesso sobre a referência no período (mín. risco na prática). "
+                       "Se a meta for inatingível, retorna a carteira de MAIOR retorno possível e avisa.",
+                  font=('TkDefaultFont', 8), foreground='gray',
+                  wraplength=700, justify='left').pack(anchor='w', pady=(5, 0))
+
         # 4. Botão Otimizar
         ttk.Button(
             scrollable_frame, 
@@ -2724,10 +2745,13 @@ class PortfolioOptimizerGUI:
                 risk_free_rate = self.optimizer.risk_free_rate_total
             else:
                 risk_free_rate = self.risk_free_var.get() / 100
-            
+
+            # Meta de retorno (opcional): excesso mínimo sobre a referência no período
+            target_return = self.meta_var.get() / 100 if self.use_meta.get() else None
+
             status_label.config(text="Executando otimização...")
             self.root.update()
-            
+
             # EXECUTAR OTIMIZAÇÃO com todas as funcionalidades
             if len(short_assets) > 0:
                 # Otimização com shorts
@@ -2736,6 +2760,7 @@ class PortfolioOptimizerGUI:
                     short_assets=short_assets,
                     short_weights=short_weights,
                     objective_type=objective_type,
+                    target_return=target_return,
                     max_weight=max_weight,
                     min_weight=min_weight,
                     risk_free_rate=risk_free_rate,
@@ -2745,21 +2770,22 @@ class PortfolioOptimizerGUI:
                 # Otimização normal
                 self.result = self.optimizer.optimize_portfolio(
                     objective_type=objective_type,
+                    target_return=target_return,
                     max_weight=max_weight,
                     min_weight=min_weight,
                     risk_free_rate=risk_free_rate,
                     individual_constraints=individual_constraints
                 )
-            
+
             # Fechar janela de progresso
             progress_window.destroy()
-            
+
             if self.result['success']:
                 self.display_results()
                 self.display_monthly_tables()  # NOVA: Exibir tabelas mensais
                 self.export_csv_btn.config(state='normal')
                 self.export_excel_btn.config(state='normal')
-                messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!")
+                messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!" + self._meta_message())
                 # Mudar para aba de resultados
                 self.notebook.select(self.tab_results)
             else:
@@ -2769,7 +2795,18 @@ class PortfolioOptimizerGUI:
             if 'progress_window' in locals():
                 progress_window.destroy()
             messagebox.showerror("Erro", f"Erro durante otimização:\n{str(e)}")
-            
+
+    def _meta_message(self):
+        """Texto sobre o resultado da meta (vazio se meta não foi usada)."""
+        if not self.result or not self.result.get('meta_used'):
+            return ""
+        alvo = self.result['meta_target'] * 100
+        obtido = self.result['meta_excess'] * 100
+        if self.result.get('meta_atingida'):
+            return f"\n\n🎯 Meta atingida: excesso no período = {obtido:.2f}% (meta {alvo:.2f}%)."
+        return (f"\n\n⚠️ Meta NÃO atingida com os limites atuais.\n"
+                f"Melhor possível: excesso = {obtido:.2f}% (meta {alvo:.2f}%).")
+
     def display_results(self):
         """Exibir resultados com layout horizontal (In-Sample | Out-of-Sample | Comparação)"""
         if not self.result or not self.result['success']:

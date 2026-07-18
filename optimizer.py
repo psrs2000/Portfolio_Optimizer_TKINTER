@@ -329,11 +329,19 @@ class PortfolioOptimizer:
                 # Maximizar retorno (minimizar -retorno)
                 return -metrics['annual_return']
         
-        # Restrições
+        # Restrições base: soma dos pesos = 1 (100%)
         constraints = [
-            # Soma dos pesos = 1 (100%)
             {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
         ]
+
+        # META DE RETORNO (opcional): exige excesso do período >= target_return
+        # excess_return = retorno total do período - referência do período
+        meta_used = target_return is not None
+        if meta_used:
+            constraints.append({
+                'type': 'ineq',
+                'fun': lambda w: self.calculate_portfolio_metrics(w, risk_free_rate)['excess_return'] - target_return
+            })
         
         # Limites para cada peso
         if individual_constraints is not None:
@@ -355,42 +363,64 @@ class PortfolioOptimizer:
         
         # Chute inicial (pesos iguais)
         initial_weights = np.array([1/self.n_assets] * self.n_assets)
-        
-        # Otimização (aqui é onde a mágica acontece!)
-        try:
-            result = minimize(
-                objective_function,
-                initial_weights,
-                method='SLSQP',
-                bounds=bounds,
-                constraints=constraints,
+
+        def _run(obj_fn, cons):
+            return minimize(
+                obj_fn, initial_weights, method='SLSQP',
+                bounds=bounds, constraints=cons,
                 options={'maxiter': 1000, 'ftol': 1e-9}
             )
-            
+
+        # Otimização (aqui é onde a mágica acontece!)
+        try:
+            result = _run(objective_function, constraints)
+
+            # Verificar a meta; se inatingível, cair para "melhor retorno possível"
+            meta_atingida = True
+            if meta_used:
+                if result.success:
+                    m = self.calculate_portfolio_metrics(result.x, risk_free_rate)
+                    meta_atingida = m['excess_return'] >= target_return - 1e-6
+                else:
+                    meta_atingida = False
+                if not meta_atingida:
+                    base_constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1}]
+
+                    def _return_obj(w):
+                        return -self.calculate_portfolio_metrics(w, risk_free_rate)['annual_return']
+
+                    result = _run(_return_obj, base_constraints)
+
             if result.success:
                 optimal_weights = result.x
                 metrics = self.calculate_portfolio_metrics(optimal_weights, risk_free_rate)
-                
-                return {
+
+                out = {
                     'success': True,
                     'weights': optimal_weights,
                     'metrics': metrics,
                     'assets': self.assets
                 }
+                if meta_used:
+                    out['meta_used'] = True
+                    out['meta_target'] = target_return
+                    out['meta_excess'] = metrics['excess_return']
+                    out['meta_atingida'] = metrics['excess_return'] >= target_return - 1e-6
+                return out
             else:
                 return {
                     'success': False,
                     'message': f"Otimização falhou: {result.message}"
                 }
-                
+
         except Exception as e:
             return {
                 'success': False,
                 'message': f"Erro na otimização: {str(e)}"
             }
     
-    def optimize_portfolio_with_shorts(self, selected_assets, short_assets, short_weights, 
-                                     objective_type='sharpe', max_weight=1.0, min_weight=0.0, 
+    def optimize_portfolio_with_shorts(self, selected_assets, short_assets, short_weights,
+                                     objective_type='sharpe', target_return=None, max_weight=1.0, min_weight=0.0,
                                      risk_free_rate=0.0, individual_constraints=None):
         """
         Otimiza portfólio com posições short fixas
@@ -405,21 +435,18 @@ class PortfolioOptimizer:
         
         # Número de ativos para otimizar (apenas os long)
         n_optimize = len(selected_indices)
-        
-        def objective_function(weights_to_optimize):
-            # Criar array de pesos completo
-            full_weights = np.zeros(self.n_assets)
-            
-            # Pesos dos ativos otimizados
+
+        def _full_weights(weights_to_optimize):
+            """Monta o vetor completo de pesos (long otimizados + shorts fixos)."""
+            fw = np.zeros(self.n_assets)
             for i, idx in enumerate(selected_indices):
-                full_weights[idx] = weights_to_optimize[i]
-            
-            # Pesos fixos dos shorts
+                fw[idx] = weights_to_optimize[i]
             for asset, weight in short_weights.items():
-                idx = self.assets.index(asset)
-                full_weights[idx] = weight
-            
-            # Calcular métricas com todos os pesos
+                fw[self.assets.index(asset)] = weight
+            return fw
+
+        def objective_function(weights_to_optimize):
+            full_weights = _full_weights(weights_to_optimize)
             metrics = self.calculate_portfolio_metrics(full_weights, risk_free_rate)
             
             if objective_type == 'sharpe':
@@ -470,7 +497,15 @@ class PortfolioOptimizer:
         constraints = [
             {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
         ]
-        
+
+        # META DE RETORNO (opcional): excesso do período >= target_return
+        meta_used = target_return is not None
+        if meta_used:
+            constraints.append({
+                'type': 'ineq',
+                'fun': lambda w: self.calculate_portfolio_metrics(_full_weights(w), risk_free_rate)['excess_return'] - target_return
+            })
+
         # Limites para pesos long
         if individual_constraints is not None:
             # Usar limites individuais para ativos long
@@ -488,48 +523,59 @@ class PortfolioOptimizer:
         else:
             # Usar limites globais para todos
             bounds = tuple((min_weight, max_weight) for _ in range(n_optimize))
-        
+
         # Chute inicial
         initial_weights = np.array([1/n_optimize] * n_optimize)
-        
-        # Otimização
-        try:
-            result = minimize(
-                objective_function,
-                initial_weights,
-                method='SLSQP',
-                bounds=bounds,
-                constraints=constraints,
+
+        def _run(obj_fn, cons):
+            return minimize(
+                obj_fn, initial_weights, method='SLSQP',
+                bounds=bounds, constraints=cons,
                 options={'maxiter': 1000, 'ftol': 1e-9}
             )
-            
+
+        # Otimização
+        try:
+            result = _run(objective_function, constraints)
+
+            # Verificar a meta; se inatingível, cair para "melhor retorno possível"
+            meta_atingida = True
+            if meta_used:
+                if result.success:
+                    m = self.calculate_portfolio_metrics(_full_weights(result.x), risk_free_rate)
+                    meta_atingida = m['excess_return'] >= target_return - 1e-6
+                else:
+                    meta_atingida = False
+                if not meta_atingida:
+                    base_constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1}]
+
+                    def _return_obj(w):
+                        return -self.calculate_portfolio_metrics(_full_weights(w), risk_free_rate)['annual_return']
+
+                    result = _run(_return_obj, base_constraints)
+
             if result.success:
-                # Reconstruir pesos completos
-                full_weights = np.zeros(self.n_assets)
-                
-                # Pesos otimizados
-                for i, idx in enumerate(selected_indices):
-                    full_weights[idx] = result.x[i]
-                
-                # Pesos shorts
-                for asset, weight in short_weights.items():
-                    idx = self.assets.index(asset)
-                    full_weights[idx] = weight
-                
+                full_weights = _full_weights(result.x)
                 metrics = self.calculate_portfolio_metrics(full_weights, risk_free_rate)
-                
-                return {
+
+                out = {
                     'success': True,
                     'weights': full_weights,
                     'metrics': metrics,
                     'assets': self.assets
                 }
+                if meta_used:
+                    out['meta_used'] = True
+                    out['meta_target'] = target_return
+                    out['meta_excess'] = metrics['excess_return']
+                    out['meta_atingida'] = metrics['excess_return'] >= target_return - 1e-6
+                return out
             else:
                 return {
                     'success': False,
                     'message': f"Otimização falhou: {result.message}"
                 }
-                
+
         except Exception as e:
             return {
                 'success': False,
