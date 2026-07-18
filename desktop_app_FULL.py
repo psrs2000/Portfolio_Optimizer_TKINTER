@@ -213,6 +213,119 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
         print(f"❌ Erro no cálculo de ranking: {str(e)}")
         return None
 
+
+# =============================================================================
+# IMPORTAÇÃO DE RESTRIÇÕES (MÍN/MÁX OU PESOS) DE ARQUIVO EXCEL/CSV
+# =============================================================================
+
+def load_constraints_from_file(file_path):
+    """
+    Lê um arquivo Excel/CSV com restrições por ativo.
+
+    Formatos aceitos (nomes de coluna flexíveis, sem diferenciar maiúsculas):
+      • 'Ativo', 'Min', 'Max'  -> usa mínimo e máximo por ativo (faixas)
+      • 'Ativo', 'Peso'        -> fixa min = max = peso
+                                  (útil para ANALISAR um portfólio pronto:
+                                   quando os pesos somam 100%, o otimizador
+                                   é forçado exatamente àquela composição)
+
+    Valores em PERCENTUAL (ex.: 30 = 30%). Se TODOS os valores forem <= 1,
+    assume-se que já estão em fração (ex.: 0.30 = 30%).
+
+    Retorna: (constraints, warnings)
+      constraints = {ativo: {'min': fração, 'max': fração}}
+      warnings    = lista de avisos (strings)
+    """
+    warnings = []
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext in ('.xlsx', '.xls'):
+        df = pd.read_excel(file_path)
+    else:
+        # CSV: detecta separador automaticamente (vírgula, ponto-e-vírgula, tab)
+        df = pd.read_csv(file_path, sep=None, engine='python')
+
+    if df is None or df.empty or len(df.columns) < 2:
+        raise ValueError("Arquivo vazio ou sem colunas suficientes "
+                         "(mínimo: coluna de ativo + 1 coluna de valor).")
+
+    low = {c: str(c).strip().lower() for c in df.columns}
+
+    def find(terms, exclude=()):
+        for col, name in low.items():
+            if any(t in name for t in terms) and not any(e in name for e in exclude):
+                return col
+        return None
+
+    asset_col = find(['ativo', 'asset', 'ticker', 'papel', 'codigo', 'código', 'symbol', 'nome'])
+    min_col = find(['min', 'mín'])
+    max_col = find(['max', 'máx'])
+    weight_col = find(['peso', 'weight', 'quant', 'aloca', 'aloc', 'percent', 'participa'])
+
+    if asset_col is None:
+        asset_col = df.columns[0]
+
+    def to_float(v):
+        if pd.isna(v):
+            return None
+        s = str(v).strip().replace('%', '').replace(' ', '')
+        if s == '':
+            return None
+        if ',' in s and '.' in s:
+            s = s.replace('.', '').replace(',', '.')   # 1.234,56 -> 1234.56
+        elif ',' in s:
+            s = s.replace(',', '.')                     # 30,5 -> 30.5
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    raw = {}
+    if min_col is not None and max_col is not None:
+        for _, row in df.iterrows():
+            asset = str(row[asset_col]).strip()
+            if not asset or asset.lower() == 'nan':
+                continue
+            mn = to_float(row[min_col])
+            mx = to_float(row[max_col])
+            if mn is None or mx is None:
+                warnings.append(f"'{asset}': valor mín/máx inválido, ignorado.")
+                continue
+            raw[asset] = [mn, mx]
+    else:
+        # Coluna única de peso -> min = max = peso
+        if weight_col is None:
+            weight_col = df.columns[1]   # assume 2ª coluna como peso
+        for _, row in df.iterrows():
+            asset = str(row[asset_col]).strip()
+            if not asset or asset.lower() == 'nan':
+                continue
+            w = to_float(row[weight_col])
+            if w is None:
+                warnings.append(f"'{asset}': peso inválido, ignorado.")
+                continue
+            raw[asset] = [w, w]
+
+    if not raw:
+        raise ValueError("Nenhum ativo válido encontrado no arquivo.")
+
+    # Percentual (0-100) vs fração (0-1): decide pela maior magnitude presente
+    all_vals = [abs(v) for pair in raw.values() for v in pair]
+    max_val = max(all_vals) if all_vals else 0
+    scale = 1.0 if max_val <= 1.0 else 0.01
+
+    constraints = {}
+    for asset, (mn, mx) in raw.items():
+        mn *= scale
+        mx *= scale
+        if mn > mx:
+            mn, mx = mx, mn
+            warnings.append(f"'{asset}': mín > máx, valores invertidos.")
+        constraints[asset] = {'min': max(0.0, mn), 'max': max(0.0, mx)}
+
+    return constraints, warnings
+
+
 class PortfolioOptimizerGUI:
     def __init__(self, root):
         self.root = root
@@ -881,12 +994,27 @@ class PortfolioOptimizerGUI:
         # Checkbox para habilitar restrições
         self.use_individual_constraints = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            frame, 
-            text="Habilitar limites específicos para ativos selecionados", 
+            frame,
+            text="Habilitar limites específicos para ativos selecionados",
             variable=self.use_individual_constraints,
             command=self.toggle_individual_constraints
         ).pack(anchor='w', pady=5)
-        
+
+        # Importar restrições de arquivo Excel/CSV
+        import_frame = ttk.Frame(frame)
+        import_frame.pack(anchor='w', fill='x', pady=(0,5))
+        ttk.Button(
+            import_frame,
+            text="📂 Importar Restrições (Excel/CSV)",
+            command=self.import_constraints_file
+        ).pack(side='left')
+        ttk.Label(
+            frame,
+            text="Colunas aceitas: 'Ativo, Min, Max' (faixas) ou 'Ativo, Peso' "
+                 "(pesos fixos → analisa o portfólio). Valores em % (ex.: 30 = 30%).",
+            font=('TkDefaultFont', 8), foreground='gray', wraplength=700, justify='left'
+        ).pack(anchor='w', pady=(0,5))
+
         # Frame para scroll das restrições
         self.constraints_canvas = tk.Canvas(frame)
         constraints_scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.constraints_canvas.yview)
@@ -906,7 +1034,88 @@ class PortfolioOptimizerGUI:
         # Label inicial
         self.constraints_info = ttk.Label(self.constraints_frame, text="Carregue dados e selecione ativos primeiro")
         self.constraints_info.pack(pady=20)
-        
+
+    def import_constraints_file(self):
+        """Importar restrições mín/máx (ou pesos) de um arquivo Excel/CSV."""
+        if self.assets_listbox.size() == 0:
+            messagebox.showerror("Erro", "Carregue os dados primeiro (aba Dados)!")
+            return
+
+        file_path = filedialog.askopenfilename(
+            title="Importar restrições (Excel/CSV)",
+            filetypes=[("Planilhas", "*.xlsx *.xls *.csv"),
+                       ("Excel", "*.xlsx *.xls"),
+                       ("CSV", "*.csv"),
+                       ("Todos", "*.*")]
+        )
+        if not file_path:
+            return
+
+        try:
+            constraints, warnings = load_constraints_from_file(file_path)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Falha ao ler o arquivo:\n{str(e)}")
+            return
+
+        self._apply_imported_constraints(constraints, warnings)
+
+    def _apply_imported_constraints(self, constraints, warnings):
+        """Casa os ativos do arquivo com os dados, seleciona e ativa as restrições."""
+        available = list(self.assets_listbox.get(0, tk.END))
+        avail_lower = {a.lower(): a for a in available}
+
+        matched = {}
+        not_found = []
+        for asset, lim in constraints.items():
+            if asset in available:
+                matched[asset] = lim
+            elif asset.lower() in avail_lower:
+                matched[avail_lower[asset.lower()]] = lim
+            else:
+                not_found.append(asset)
+
+        if not matched:
+            exemplos = ', '.join(list(constraints.keys())[:10])
+            messagebox.showwarning(
+                "Atenção",
+                "Nenhum ativo do arquivo corresponde aos ativos carregados.\n"
+                f"Ativos no arquivo: {exemplos}")
+            return
+
+        # Selecionar exatamente os ativos importados e ativar restrições
+        self.use_individual_constraints.set(True)
+        self.individual_constraints = matched
+
+        self.assets_listbox.selection_clear(0, tk.END)
+        for i in range(self.assets_listbox.size()):
+            if self.assets_listbox.get(i) in matched:
+                self.assets_listbox.selection_set(i)
+
+        self.update_advanced_widgets()
+        try:
+            self.update_selection_info()
+        except Exception:
+            pass
+
+        # Diagnóstico: portfólio (min == max) e soma
+        is_portfolio = all(abs(v['min'] - v['max']) < 1e-9 for v in matched.values())
+        soma = sum((v['min'] + v['max']) / 2 for v in matched.values()) * 100
+
+        msg = f"✅ {len(matched)} ativos importados e selecionados."
+        if is_portfolio:
+            msg += f"\n📊 Modo portfólio (pesos fixos). Soma = {soma:.1f}%."
+            if abs(soma - 100) < 0.5:
+                msg += "\n🎯 Soma ≈ 100%: o software atuará como analisador deste portfólio."
+        if not_found:
+            extra = ', '.join(not_found[:8]) + ('...' if len(not_found) > 8 else '')
+            msg += f"\n⚠️ {len(not_found)} não encontrados nos dados: {extra}"
+        if warnings:
+            msg += "\n\n" + "\n".join(warnings[:6])
+            if len(warnings) > 6:
+                msg += "\n..."
+
+        messagebox.showinfo("Importação concluída", msg)
+
     def setup_short_tab(self):
         """Configurar aba de short selling"""
         frame = ttk.LabelFrame(self.tab_short, text="🔄 Posições Short / Hedge", padding="10")
