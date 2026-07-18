@@ -3230,6 +3230,23 @@ Isso ajuda a detectar:
         cfg_right.addLayout(weight_l)
         config_l.addLayout(cfg_right, 1)
 
+        cfg_meta = QVBoxLayout()
+        lbl_m = QLabel("🎯 Meta de Retorno:")
+        lbl_m.setFont(bold())
+        cfg_meta.addWidget(lbl_m)
+        chk_auto_meta = QCheckBox("Exigir meta")
+        self.use_auto_meta = BoolVar(chk_auto_meta)
+        cfg_meta.addWidget(chk_auto_meta)
+        meta_l2 = QHBoxLayout()
+        e_meta = QLineEdit()
+        e_meta.setFixedWidth(50)
+        self.auto_meta_var = NumVar(e_meta, 5)
+        meta_l2.addWidget(e_meta)
+        meta_l2.addWidget(QLabel("% acima da ref."))
+        meta_l2.addStretch()
+        cfg_meta.addLayout(meta_l2)
+        config_l.addLayout(cfg_meta, 1)
+
         params_grid.addWidget(config_box, 2, 0, 1, 2)
 
         # Coluna direita: controles e resultados
@@ -3457,6 +3474,7 @@ Isso ajuda a detectar:
                         'use_shorts': self.use_auto_shorts.get(),
                         'short_asset': self.short_asset_var.get() if self.use_auto_shorts.get() else None,
                         'short_weight': self.short_weight_var.get() / 100 if self.use_auto_shorts.get() else 0,
+                        'target_return': (self.auto_meta_var.get() / 100) if self.use_auto_meta.get() else None,
                         'desc': f"{otim_period}_{rebal_period}_{obj_key}"
                     }
                     configs.append(config)
@@ -3714,6 +3732,8 @@ Isso ajuda a detectar:
                     'hc10': 'hc10', 'quality_linear': 'quality_linear'
                 }
 
+                target_return = config.get('target_return')
+
                 if config['use_shorts'] and config['short_asset']:
                     print(f"🔄 OTIMIZAÇÃO COM SHORTS")
                     self.result = self.optimizer.optimize_portfolio_with_shorts(
@@ -3721,6 +3741,7 @@ Isso ajuda a detectar:
                         short_assets=[config['short_asset']],
                         short_weights={config['short_asset']: config['short_weight']},
                         objective_type=objective_map[config['objective']],
+                        target_return=target_return,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
@@ -3730,6 +3751,7 @@ Isso ajuda a detectar:
                     print(f"📊 OTIMIZAÇÃO NORMAL (SEM SHORTS)")
                     self.result = self.optimizer.optimize_portfolio(
                         objective_type=objective_map[config['objective']],
+                        target_return=target_return,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,

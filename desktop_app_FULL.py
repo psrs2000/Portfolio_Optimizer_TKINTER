@@ -3641,7 +3641,17 @@ class PortfolioOptimizerGUI:
         self.weight_max_var = tk.DoubleVar(value=30)
         ttk.Entry(weight_frame, textvariable=self.weight_max_var, width=6).pack(side='left', padx=2)
         ttk.Label(weight_frame, text="%").pack(side='left')
-        
+
+        # Meta de Retorno (aplicada a cada step do walk-forward)
+        ttk.Label(config_right, text="🎯 Meta de Retorno:", font=('TkDefaultFont', 9, 'bold')).pack(anchor='w', pady=(6,0))
+        meta_auto_frame = ttk.Frame(config_right)
+        meta_auto_frame.pack(fill='x', pady=2)
+        self.use_auto_meta = tk.BooleanVar(value=False)
+        ttk.Checkbutton(meta_auto_frame, text="Exigir meta", variable=self.use_auto_meta).pack(side='left')
+        self.auto_meta_var = tk.DoubleVar(value=5)
+        ttk.Entry(meta_auto_frame, textvariable=self.auto_meta_var, width=6).pack(side='left', padx=2)
+        ttk.Label(meta_auto_frame, text="% acima da ref.").pack(side='left')
+
         # ========== COLUNA DIREITA - CONTROLES E RESULTADOS ==========
         
         # Estimativa e controles (parte superior)
@@ -3919,6 +3929,7 @@ class PortfolioOptimizerGUI:
                         'use_shorts': self.use_auto_shorts.get(),
                         'short_asset': self.short_asset_var.get() if self.use_auto_shorts.get() else None,
                         'short_weight': self.short_weight_var.get() / 100 if self.use_auto_shorts.get() else 0,
+                        'target_return': (self.auto_meta_var.get() / 100) if self.use_auto_meta.get() else None,
                         'desc': f"{otim_period}_{rebal_period}_{obj_key}"
                     }
                     configs.append(config)
@@ -4232,6 +4243,7 @@ class PortfolioOptimizerGUI:
                 }
 
                 # Executar otimização
+                target_return = config.get('target_return')
                 if config['use_shorts'] and config['short_asset']:
                     print(f"🔄 OTIMIZAÇÃO COM SHORTS")
                     self.result = self.optimizer.optimize_portfolio_with_shorts(
@@ -4239,6 +4251,7 @@ class PortfolioOptimizerGUI:
                         short_assets=[config['short_asset']],
                         short_weights={config['short_asset']: config['short_weight']},
                         objective_type=objective_map[config['objective']],
+                        target_return=target_return,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
@@ -4248,6 +4261,7 @@ class PortfolioOptimizerGUI:
                     print(f"📊 OTIMIZAÇÃO NORMAL (SEM SHORTS)")
                     self.result = self.optimizer.optimize_portfolio(
                         objective_type=objective_map[config['objective']],
+                        target_return=target_return,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
