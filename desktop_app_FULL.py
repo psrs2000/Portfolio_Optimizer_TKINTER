@@ -910,6 +910,7 @@ class PortfolioOptimizerGUI:
         # Lista COMPLETA de objetivos (como no Streamlit)
         self.base_objectives = [
             "Maximizar Sharpe Ratio",
+            "Maximizar Sortino Ratio",
             "Minimizar Risco",
             "Maximizar Inclinação",
             "Maximizar Inclinação/[(1-R²)×Vol]",
@@ -2730,6 +2731,7 @@ class PortfolioOptimizerGUI:
             # Mapeamento completo de objetivos
             objective_map = {
                 "Maximizar Sharpe Ratio": 'sharpe',
+                "Maximizar Sortino Ratio": 'sortino',
                 "Minimizar Risco": 'volatility',
                 "Maximizar Inclinação": 'slope',
                 "Maximizar Inclinação/[(1-R²)×Vol]": 'hc10',
@@ -3559,9 +3561,11 @@ class PortfolioOptimizerGUI:
         
         self.objectives = {
             'sharpe': tk.BooleanVar(value=True),
+            'sortino': tk.BooleanVar(value=False),
             'volatility': tk.BooleanVar(value=False),
             'hc10': tk.BooleanVar(value=False),
-            'quality_linear': tk.BooleanVar(value=False)
+            'quality_linear': tk.BooleanVar(value=False),
+            'excess_hc10': tk.BooleanVar(value=False)
         }
         
         # Objetivos em grid compacto
@@ -3570,9 +3574,11 @@ class PortfolioOptimizerGUI:
         
         obj_labels = {
             'sharpe': 'Maximizar Sharpe',
+            'sortino': 'Maximizar Sortino',
             'volatility': 'Minimizar Risco',
             'hc10': 'Maximizar Inc/[(1-R²)×Vol]',
-            'quality_linear': 'Qualidade da Linearidade'
+            'quality_linear': 'Qualidade da Linearidade',
+            'excess_hc10': 'Linearidade do Excesso'
         }
         
         for i, (key, var) in enumerate(self.objectives.items()):
@@ -3909,9 +3915,11 @@ class PortfolioOptimizerGUI:
         # Mapeamento de objetivos para códigos internos
         obj_mapping = {
             'sharpe': 'sharpe',
+            'sortino': 'sortino',
             'volatility': 'volatility',
             'hc10': 'hc10',
-            'quality_linear': 'quality_linear'
+            'quality_linear': 'quality_linear',
+            'excess_hc10': 'excess_hc10'
         }
         
         # Gerar todas as combinações
@@ -4237,9 +4245,11 @@ class PortfolioOptimizerGUI:
 
                 objective_map = {
                     'sharpe': 'sharpe',
+                    'sortino': 'sortino',
                     'volatility': 'volatility',
                     'hc10': 'hc10',
-                    'quality_linear': 'quality_linear'
+                    'quality_linear': 'quality_linear',
+                    'excess_hc10': 'excess_hc10'
                 }
 
                 # Executar otimização
@@ -4521,9 +4531,11 @@ class PortfolioOptimizerGUI:
         # Mapear objetivos
         obj_names = {
             'sharpe': 'Sharpe',
+            'sortino': 'Sortino',
             'volatility': 'MinRisco',
             'hc10': 'Inc/[(1-R²)×Vol]',
-            'quality_linear': 'Qualidade'
+            'quality_linear': 'Qualidade',
+            'excess_hc10': 'Lin.Excesso'
         }
         
         # Inserir resultados
