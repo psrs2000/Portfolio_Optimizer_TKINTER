@@ -241,7 +241,67 @@ class PortfolioOptimizer:
 		    'excess_cumulative': excess_cumulative
 	    }
     
-    def optimize_portfolio(self, objective_type='sharpe', target_return=None, max_weight=1.0, min_weight=0.0, 
+    def _solve_multistart(self, objective_function, bounds, constraints, initial_weights, n_starts=15):
+        """
+        Resolve o NLP com SLSQP a partir de pesos iguais e, SE detectar
+        travamento (parou no ponto inicial ou preso na região de penalidade),
+        tenta vários chutes iniciais aleatórios e fica com o melhor.
+
+        Objetivos como hc10/excess_hc10 usam sentinelas de penalidade (1e10);
+        quando os pesos iguais caem nessa região, o SLSQP "converge" de imediato
+        (tolerância relativa sobre um valor enorme) e devolve o próprio ponto
+        inicial. O multi-start escapa desse platô sem custo no caso comum
+        (só dispara quando há travamento).
+        """
+        def _run(x0):
+            return minimize(
+                objective_function, x0, method='SLSQP',
+                bounds=bounds, constraints=constraints,
+                options={'maxiter': 1000, 'ftol': 1e-9}
+            )
+
+        result = _run(initial_weights)
+
+        def _stuck(res):
+            if not res.success:
+                return True
+            try:
+                if np.allclose(res.x, initial_weights, atol=1e-6):
+                    return True   # não saiu do ponto inicial
+                if objective_function(res.x) >= 1e9:
+                    return True   # preso na região de penalidade
+            except Exception:
+                return True
+            return False
+
+        if _stuck(result):
+            # Guardar o melhor válido até agora (se houver)
+            if result.success and objective_function(result.x) < 1e9:
+                best, best_val = result, objective_function(result.x)
+            else:
+                best, best_val = None, np.inf
+
+            lows = np.array([b[0] for b in bounds])
+            highs = np.array([b[1] for b in bounds])
+            rng = np.random.default_rng(0)  # determinístico: resultado reprodutível
+
+            for _ in range(n_starts):
+                x0 = lows + rng.random(len(bounds)) * (highs - lows)
+                try:
+                    res = _run(x0)
+                except Exception:
+                    continue
+                if res.success:
+                    val = objective_function(res.x)
+                    if val < best_val:
+                        best, best_val = res, val
+
+            if best is not None:
+                result = best
+
+        return result
+
+    def optimize_portfolio(self, objective_type='sharpe', target_return=None, max_weight=1.0, min_weight=0.0,
                           risk_free_rate=0.0, individual_constraints=None):
         """
         Otimiza o portfólio (substitui o Solver do Excel)
@@ -365,16 +425,9 @@ class PortfolioOptimizer:
         # Chute inicial (pesos iguais)
         initial_weights = np.array([1/self.n_assets] * self.n_assets)
 
-        def _run(obj_fn, cons):
-            return minimize(
-                obj_fn, initial_weights, method='SLSQP',
-                bounds=bounds, constraints=cons,
-                options={'maxiter': 1000, 'ftol': 1e-9}
-            )
-
         # Otimização (aqui é onde a mágica acontece!)
         try:
-            result = _run(objective_function, constraints)
+            result = self._solve_multistart(objective_function, bounds, constraints, initial_weights)
 
             # Verificar a meta; se inatingível, cair para "melhor retorno possível"
             meta_atingida = True
@@ -390,7 +443,7 @@ class PortfolioOptimizer:
                     def _return_obj(w):
                         return -self.calculate_portfolio_metrics(w, risk_free_rate)['annual_return']
 
-                    result = _run(_return_obj, base_constraints)
+                    result = self._solve_multistart(_return_obj, bounds, base_constraints, initial_weights)
 
             if result.success:
                 optimal_weights = result.x
@@ -531,16 +584,9 @@ class PortfolioOptimizer:
         # Chute inicial
         initial_weights = np.array([1/n_optimize] * n_optimize)
 
-        def _run(obj_fn, cons):
-            return minimize(
-                obj_fn, initial_weights, method='SLSQP',
-                bounds=bounds, constraints=cons,
-                options={'maxiter': 1000, 'ftol': 1e-9}
-            )
-
         # Otimização
         try:
-            result = _run(objective_function, constraints)
+            result = self._solve_multistart(objective_function, bounds, constraints, initial_weights)
 
             # Verificar a meta; se inatingível, cair para "melhor retorno possível"
             meta_atingida = True
@@ -556,7 +602,7 @@ class PortfolioOptimizer:
                     def _return_obj(w):
                         return -self.calculate_portfolio_metrics(_full_weights(w), risk_free_rate)['annual_return']
 
-                    result = _run(_return_obj, base_constraints)
+                    result = self._solve_multistart(_return_obj, bounds, base_constraints, initial_weights)
 
             if result.success:
                 full_weights = _full_weights(result.x)
