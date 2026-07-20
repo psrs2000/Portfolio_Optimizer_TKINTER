@@ -285,16 +285,31 @@ class PortfolioOptimizer:
             highs = np.array([b[1] for b in bounds])
             rng = np.random.default_rng(0)  # determinístico: resultado reprodutível
 
-            for _ in range(n_starts):
+            # Parada antecipada: assim que escapamos da penalidade e o resultado
+            # estagna, não vale a pena continuar testando todos os reinícios.
+            min_starts = 3     # tenta ao menos alguns para poder comparar
+            patience = 2       # para após N reinícios seguidos sem melhora
+            no_improve = 0
+            for i in range(n_starts):
                 x0 = lows + rng.random(len(bounds)) * (highs - lows)
                 try:
                     res = _run(x0)
                 except Exception:
-                    continue
-                if res.success:
+                    no_improve += 1
+                    res = None
+                if res is not None and res.success:
                     val = objective_function(res.x)
                     if val < best_val:
                         best, best_val = res, val
+                        no_improve = 0
+                    else:
+                        no_improve += 1
+                else:
+                    no_improve += 1
+
+                escaped = best is not None and best_val < 1e9
+                if escaped and (i + 1) >= min_starts and no_improve >= patience:
+                    break
 
             if best is not None:
                 result = best
