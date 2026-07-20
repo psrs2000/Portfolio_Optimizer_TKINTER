@@ -2401,8 +2401,10 @@ class PortfolioOptimizerGUI(QMainWindow):
         if not self.use_individual_constraints.get():
             return None
 
+        # Habilitado mas sem nenhuma restrição configurada (ex.: após "Limpar Todos"):
+        # devolver dict vazio -> otimizador usa os limites globais e NÃO aborta.
         if not hasattr(self, 'individual_constraints') or not self.individual_constraints:
-            return None
+            return {}
 
         for asset, limits in self.individual_constraints.items():
             min_val = limits['min']
