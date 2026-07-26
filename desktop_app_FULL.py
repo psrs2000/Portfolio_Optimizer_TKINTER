@@ -347,6 +347,7 @@ class PortfolioOptimizerGUI:
         # Variáveis para short selling
         self.short_weights = {}
         self.short_widgets = {}
+        self.auto_short_weights = {}   # shorts fixos da Auto-Otimização
         self.individual_constraints = {}
         
         # NOVO: Variáveis para tabelas mensais
@@ -3599,15 +3600,14 @@ class PortfolioOptimizerGUI:
         # Frame para configuração de shorts
         self.auto_shorts_config = ttk.Frame(short_frame)
         self.auto_shorts_config.pack(fill='both', expand=True, pady=5)
-        
-        ttk.Label(self.auto_shorts_config, text="Ativo:").grid(row=0, column=0, sticky='w', padx=(0,5))
-        self.short_asset_var = tk.StringVar(value="BOVA11")
-        ttk.Entry(self.auto_shorts_config, textvariable=self.short_asset_var, width=8).grid(row=0, column=1, sticky='w')
-        
-        ttk.Label(self.auto_shorts_config, text="Peso (%):").grid(row=1, column=0, sticky='w', padx=(0,5), pady=(5,0))
-        self.short_weight_var = tk.DoubleVar(value=-100.0)
-        ttk.Entry(self.auto_shorts_config, textvariable=self.short_weight_var, width=8).grid(row=1, column=1, sticky='w', pady=(5,0))
-        
+
+        ttk.Button(self.auto_shorts_config, text="📋 Selecionar Ativos para Short",
+                   command=self.open_auto_short_selection_window).pack(anchor='w')
+        self.auto_short_summary = ttk.Label(self.auto_shorts_config,
+                                            text="Nenhum ativo short configurado",
+                                            foreground='gray', justify='left')
+        self.auto_short_summary.pack(anchor='w', pady=(5,0))
+
         # Inicialmente desabilitado
         for widget in self.auto_shorts_config.winfo_children():
             widget.configure(state='disabled')
@@ -3719,9 +3719,137 @@ class PortfolioOptimizerGUI:
             state = 'normal'
         else:
             state = 'disabled'
-        
+
         for widget in self.auto_shorts_config.winfo_children():
             widget.configure(state=state)
+
+    def update_auto_short_summary(self):
+        """Atualizar resumo dos ativos short da Auto-Otimização"""
+        if not self.auto_short_weights:
+            self.auto_short_summary.config(text="Nenhum ativo short configurado", foreground='gray')
+            return
+        linhas = [f"📉 {a}: {w*100:.1f}%" for a, w in self.auto_short_weights.items()]
+        total = sum(self.auto_short_weights.values()) * 100
+        self.auto_short_summary.config(text="\n".join(linhas) + f"\nTotal Short: {total:.1f}%",
+                                       foreground='black')
+
+    def open_auto_short_selection_window(self):
+        """Selecionar vários ativos short (fixos) para a Auto-Otimização."""
+        available_assets = list(self.assets_listbox.get(0, tk.END))
+        if not available_assets:
+            messagebox.showerror("Erro", "Carregue os dados primeiro (aba Dados)!")
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.title("Configuração de Ativos Short - Auto-Otimização")
+        popup.geometry("600x700")
+        popup.transient(self.root)
+        popup.grab_set()
+
+        main_frame = ttk.Frame(popup, padding="10")
+        main_frame.pack(fill='both', expand=True)
+
+        ttk.Label(main_frame, text="Selecione os ativos short (peso fixo, aplicado a cada step):",
+                  font=('TkDefaultFont', 12, 'bold')).pack(pady=(0, 10))
+
+        search_frame = ttk.Frame(main_frame)
+        search_frame.pack(fill='x', pady=(0, 10))
+        ttk.Label(search_frame, text="🔍 Buscar:").pack(side='left')
+        search_var = tk.StringVar()
+        ttk.Entry(search_frame, textvariable=search_var).pack(side='left', fill='x', expand=True, padx=(5, 0))
+
+        list_frame = ttk.Frame(main_frame)
+        list_frame.pack(fill='both', expand=True, pady=(0, 10))
+        canvas = tk.Canvas(list_frame)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        asset_widgets = {}
+
+        def toggle_asset_weight(asset, use_var):
+            if asset in asset_widgets:
+                widgets = asset_widgets[asset]
+                widgets['weight_entry'].config(state='normal' if use_var.get() else 'disabled')
+
+        def create_asset_widgets():
+            for w in scrollable_frame.winfo_children():
+                w.destroy()
+            asset_widgets.clear()
+            term = search_var.get().lower()
+            filtered = [a for a in available_assets if term in a.lower()]
+            for asset in filtered:
+                asset_frame = ttk.Frame(scrollable_frame)
+                asset_frame.pack(fill='x', pady=2, padx=5)
+                use_var = tk.BooleanVar(value=asset in self.auto_short_weights)
+                ttk.Checkbutton(asset_frame, text=asset, variable=use_var,
+                                command=lambda a=asset, v=use_var: toggle_asset_weight(a, v)).pack(
+                    side='left', anchor='w', padx=(0, 10))
+                weight_frame = ttk.Frame(asset_frame)
+                weight_frame.pack(side='right')
+                ttk.Label(weight_frame, text="Peso (%):").pack(side='left', padx=(0, 5))
+                initial = self.auto_short_weights.get(asset, -1.0) * 100
+                weight_var = tk.DoubleVar(value=initial)
+                weight_entry = ttk.Entry(weight_frame, textvariable=weight_var, width=8)
+                weight_entry.pack(side='left')
+                if not use_var.get():
+                    weight_entry.config(state='disabled')
+                asset_widgets[asset] = {'use_var': use_var, 'weight_var': weight_var, 'weight_entry': weight_entry}
+
+        search_var.trace('w', lambda *args: create_asset_widgets())
+        create_asset_widgets()
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        quick_frame = ttk.LabelFrame(main_frame, text="Ações Rápidas", padding="5")
+        quick_frame.pack(fill='x', pady=(10, 0))
+        quick_buttons_frame = ttk.Frame(quick_frame)
+        quick_buttons_frame.pack(fill='x')
+
+        def select_all_assets(select):
+            for asset, widgets in asset_widgets.items():
+                widgets['use_var'].set(select)
+                toggle_asset_weight(asset, widgets['use_var'])
+
+        def apply_default_weight():
+            dw = default_weight_var.get()
+            for asset, widgets in asset_widgets.items():
+                if widgets['use_var'].get():
+                    widgets['weight_var'].set(dw)
+
+        ttk.Button(quick_buttons_frame, text="Selecionar Todos",
+                   command=lambda: select_all_assets(True)).pack(side='left', padx=(0, 5))
+        ttk.Button(quick_buttons_frame, text="Limpar Todos",
+                   command=lambda: select_all_assets(False)).pack(side='left', padx=(0, 5))
+        ttk.Label(quick_buttons_frame, text="Peso padrão:").pack(side='left', padx=(20, 5))
+        default_weight_var = tk.DoubleVar(value=-10.0)
+        ttk.Entry(quick_buttons_frame, textvariable=default_weight_var, width=8).pack(side='left', padx=(0, 5))
+        ttk.Button(quick_buttons_frame, text="Aplicar aos Selecionados",
+                   command=lambda: apply_default_weight()).pack(side='left', padx=(5, 0))
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill='x', pady=(10, 0))
+
+        def apply_configuration():
+            new_weights = {}
+            for asset, widgets in asset_widgets.items():
+                if widgets['use_var'].get():
+                    weight = widgets['weight_var'].get() / 100
+                    if weight >= 0:
+                        messagebox.showerror("Erro", f"Peso short deve ser negativo para {asset}!")
+                        return
+                    new_weights[asset] = weight
+            self.auto_short_weights = new_weights
+            self.update_auto_short_summary()
+            popup.destroy()
+            messagebox.showinfo("Sucesso", f"Configurados {len(new_weights)} ativos short!")
+
+        ttk.Button(button_frame, text="✅ Aplicar Configuração",
+                   command=apply_configuration).pack(side='right', padx=(5, 0))
+        ttk.Button(button_frame, text="❌ Cancelar", command=popup.destroy).pack(side='right')
 
     # ========== MÉTODOS DE CONTROLE ==========
 
@@ -3935,9 +4063,8 @@ class PortfolioOptimizerGUI:
                         'rank_max': self.rank_max_var.get(),
                         'weight_min': self.weight_min_var.get() / 100,
                         'weight_max': self.weight_max_var.get() / 100,
-                        'use_shorts': self.use_auto_shorts.get(),
-                        'short_asset': self.short_asset_var.get() if self.use_auto_shorts.get() else None,
-                        'short_weight': self.short_weight_var.get() / 100 if self.use_auto_shorts.get() else 0,
+                        'use_shorts': self.use_auto_shorts.get() and len(self.auto_short_weights) > 0,
+                        'short_weights': dict(self.auto_short_weights) if self.use_auto_shorts.get() else {},
                         'target_return': (self.auto_meta_var.get() / 100) if self.use_auto_meta.get() else None,
                         'desc': f"{otim_period}_{rebal_period}_{obj_key}"
                     }
@@ -4225,17 +4352,21 @@ class PortfolioOptimizerGUI:
                 # OTIMIZAÇÃO (período treino)
                 # ========================================
                 self.df = df_otim.copy()
-                
-                # Preparar lista de ativos para otimização
-                if config['use_shorts'] and config['short_asset']:
-                    if config['short_asset'] not in df_otim.columns:
-                        print(f"❌ Ativo short '{config['short_asset']}' não encontrado")
-                        return None
-                    all_assets = selected_assets + [config['short_asset']]
+
+                # Shorts fixos configurados (podem ser vários), disponíveis neste período
+                short_weights_cfg = config.get('short_weights', {})
+                short_assets = [a for a in short_weights_cfg if a in df_otim.columns]
+                # Um ativo não pode ser long (via ranking) e short ao mesmo tempo
+                if short_assets:
+                    selected_assets = [a for a in selected_assets if a not in short_assets]
+                use_shorts_step = bool(config['use_shorts'] and short_assets and len(selected_assets) >= 1)
+
+                if use_shorts_step:
+                    all_assets = selected_assets + short_assets
                 else:
                     all_assets = selected_assets
-                
-                self.optimizer = PortfolioOptimizer(self.df, all_assets if config['use_shorts'] else selected_assets)
+
+                self.optimizer = PortfolioOptimizer(self.df, all_assets)
 
                 # Taxa livre de risco para otimização
                 if hasattr(self.optimizer, 'risk_free_rate_total'):
@@ -4255,12 +4386,12 @@ class PortfolioOptimizerGUI:
 
                 # Executar otimização
                 target_return = config.get('target_return')
-                if config['use_shorts'] and config['short_asset']:
-                    print(f"🔄 OTIMIZAÇÃO COM SHORTS")
+                if use_shorts_step:
+                    print(f"🔄 OTIMIZAÇÃO COM SHORTS ({len(short_assets)} ativos)")
                     self.result = self.optimizer.optimize_portfolio_with_shorts(
                         selected_assets=selected_assets,
-                        short_assets=[config['short_asset']],
-                        short_weights={config['short_asset']: config['short_weight']},
+                        short_assets=short_assets,
+                        short_weights={a: short_weights_cfg[a] for a in short_assets},
                         objective_type=objective_map[config['objective']],
                         target_return=target_return,
                         max_weight=config['weight_max'],

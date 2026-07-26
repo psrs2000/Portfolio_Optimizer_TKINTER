@@ -590,6 +590,7 @@ class PortfolioOptimizerGUI(QMainWindow):
         # Variáveis para short selling
         self.short_weights = {}
         self.short_widgets = {}
+        self.auto_short_weights = {}   # shorts fixos da Auto-Otimização
 
         # Tabelas mensais
         self.monthly_table = None
@@ -3173,19 +3174,15 @@ Isso ajuda a detectar:
         short_l.addWidget(chk_short)
 
         self.auto_shorts_config = QWidget()
-        asc_l = QGridLayout(self.auto_shorts_config)
+        asc_l = QVBoxLayout(self.auto_shorts_config)
         asc_l.setContentsMargins(0, 0, 0, 0)
-        asc_l.setColumnStretch(2, 1)  # mantém rótulo/campo à esquerda
-        asc_l.addWidget(QLabel("Ativo:"), 0, 0)
-        e_short_asset = QLineEdit("BOVA11")
-        e_short_asset.setFixedWidth(90)
-        self.short_asset_var = StrVar(e_short_asset)
-        asc_l.addWidget(e_short_asset, 0, 1)
-        asc_l.addWidget(QLabel("Peso (%):"), 1, 0)
-        e_short_weight = QLineEdit()
-        e_short_weight.setFixedWidth(90)
-        self.short_weight_var = NumVar(e_short_weight, -100.0)
-        asc_l.addWidget(e_short_weight, 1, 1)
+        btn_auto_short = QPushButton("📋 Selecionar Ativos para Short")
+        btn_auto_short.clicked.connect(self.open_auto_short_selection_window)
+        asc_l.addWidget(btn_auto_short)
+        self.auto_short_summary = QLabel("Nenhum ativo short configurado")
+        self.auto_short_summary.setWordWrap(True)
+        self.auto_short_summary.setStyleSheet("color: gray;")
+        asc_l.addWidget(self.auto_short_summary)
         short_l.addWidget(self.auto_shorts_config)
         short_l.addStretch()
         self.auto_shorts_config.setEnabled(False)
@@ -3298,6 +3295,136 @@ Isso ajuda a detectar:
 
     def toggle_auto_shorts(self):
         self.auto_shorts_config.setEnabled(self.use_auto_shorts.get())
+
+    def update_auto_short_summary(self):
+        if not self.auto_short_weights:
+            self.auto_short_summary.setText("Nenhum ativo short configurado")
+            self.auto_short_summary.setStyleSheet("color: gray;")
+            return
+        linhas = [f"📉 {a}: {w*100:.1f}%" for a, w in self.auto_short_weights.items()]
+        total = sum(self.auto_short_weights.values()) * 100
+        self.auto_short_summary.setText("\n".join(linhas) + f"\nTotal Short: {total:.1f}%")
+        self.auto_short_summary.setStyleSheet("")
+
+    def open_auto_short_selection_window(self):
+        """Selecionar vários ativos short (fixos) para a Auto-Otimização."""
+        available_assets = list(self.assets_listbox.get(0, END))
+        if not available_assets:
+            messagebox.showerror("Erro", "Carregue os dados primeiro (aba Dados)!")
+            return
+
+        popup = QDialog(self)
+        popup.setWindowTitle("Configuração de Ativos Short - Auto-Otimização")
+        popup.resize(600, 700)
+        popup.setModal(True)
+        main_l = QVBoxLayout(popup)
+
+        lbl = QLabel("Selecione os ativos short (peso fixo, aplicado a cada step):")
+        lbl.setFont(bold(12))
+        main_l.addWidget(lbl)
+
+        search_l = QHBoxLayout()
+        search_l.addWidget(QLabel("🔍 Buscar:"))
+        search_entry = QLineEdit()
+        search_l.addWidget(search_entry)
+        main_l.addLayout(search_l)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll.setWidget(scroll_content)
+        main_l.addWidget(scroll, 1)
+
+        asset_widgets = {}
+
+        def toggle_asset_weight(asset):
+            if asset in asset_widgets:
+                w = asset_widgets[asset]
+                w['weight_entry'].setEnabled(w['use_var'].get())
+
+        def create_asset_widgets():
+            _clear_layout(scroll_layout)
+            asset_widgets.clear()
+            term = search_entry.text().lower()
+            filtered = [a for a in available_assets if term in a.lower()]
+            for asset in filtered:
+                row = QHBoxLayout()
+                chk = QCheckBox(asset)
+                chk.setChecked(asset in self.auto_short_weights)
+                use_var = BoolVar(chk)
+                row.addWidget(chk)
+                row.addStretch()
+                row.addWidget(QLabel("Peso (%):"))
+                e_w = QLineEdit()
+                e_w.setFixedWidth(80)
+                initial = self.auto_short_weights.get(asset, -1.0) * 100
+                weight_var = NumVar(e_w, initial)
+                row.addWidget(e_w)
+                e_w.setEnabled(chk.isChecked())
+                chk.toggled.connect(lambda _c, a=asset: toggle_asset_weight(a))
+                scroll_layout.addLayout(row)
+                asset_widgets[asset] = {'use_var': use_var, 'weight_var': weight_var, 'weight_entry': e_w}
+            scroll_layout.addStretch()
+
+        search_entry.textChanged.connect(create_asset_widgets)
+        create_asset_widgets()
+
+        quick_box = QGroupBox("Ações Rápidas")
+        quick_l = QHBoxLayout(quick_box)
+
+        def select_all(select):
+            for a, w in asset_widgets.items():
+                w['use_var'].set(select)
+                toggle_asset_weight(a)
+
+        def apply_default_weight():
+            dw = default_weight_var.get()
+            for a, w in asset_widgets.items():
+                if w['use_var'].get():
+                    w['weight_var'].set(dw)
+
+        b_all = QPushButton("Selecionar Todos")
+        b_all.clicked.connect(lambda: select_all(True))
+        quick_l.addWidget(b_all)
+        b_clear = QPushButton("Limpar Todos")
+        b_clear.clicked.connect(lambda: select_all(False))
+        quick_l.addWidget(b_clear)
+        quick_l.addWidget(QLabel("Peso padrão:"))
+        e_dw = QLineEdit()
+        e_dw.setFixedWidth(80)
+        default_weight_var = NumVar(e_dw, -10.0)
+        quick_l.addWidget(e_dw)
+        b_apply_dw = QPushButton("Aplicar aos Selecionados")
+        b_apply_dw.clicked.connect(apply_default_weight)
+        quick_l.addWidget(b_apply_dw)
+        main_l.addWidget(quick_box)
+
+        def apply_configuration():
+            new_weights = {}
+            for asset, w in asset_widgets.items():
+                if w['use_var'].get():
+                    weight = w['weight_var'].get() / 100
+                    if weight >= 0:
+                        messagebox.showerror("Erro", f"Peso short deve ser negativo para {asset}!")
+                        return
+                    new_weights[asset] = weight
+            self.auto_short_weights = new_weights
+            self.update_auto_short_summary()
+            popup.accept()
+            messagebox.showinfo("Sucesso", f"Configurados {len(new_weights)} ativos short!")
+
+        btn_l = QHBoxLayout()
+        btn_l.addStretch()
+        b_cancel = QPushButton("❌ Cancelar")
+        b_cancel.clicked.connect(popup.reject)
+        btn_l.addWidget(b_cancel)
+        b_ok = QPushButton("✅ Aplicar Configuração")
+        b_ok.clicked.connect(apply_configuration)
+        btn_l.addWidget(b_ok)
+        main_l.addLayout(btn_l)
+
+        popup.exec_()
 
     # ========== MÉTODOS DE CONTROLE ==========
 
@@ -3477,9 +3604,8 @@ Isso ajuda a detectar:
                         'rank_max': self.rank_max_var.get(),
                         'weight_min': self.weight_min_var.get() / 100,
                         'weight_max': self.weight_max_var.get() / 100,
-                        'use_shorts': self.use_auto_shorts.get(),
-                        'short_asset': self.short_asset_var.get() if self.use_auto_shorts.get() else None,
-                        'short_weight': self.short_weight_var.get() / 100 if self.use_auto_shorts.get() else 0,
+                        'use_shorts': self.use_auto_shorts.get() and len(self.auto_short_weights) > 0,
+                        'short_weights': dict(self.auto_short_weights) if self.use_auto_shorts.get() else {},
                         'target_return': (self.auto_meta_var.get() / 100) if self.use_auto_meta.get() else None,
                         'desc': f"{otim_period}_{rebal_period}_{obj_key}"
                     }
@@ -3717,15 +3843,20 @@ Isso ajuda a detectar:
             try:
                 self.df = df_otim.copy()
 
-                if config['use_shorts'] and config['short_asset']:
-                    if config['short_asset'] not in df_otim.columns:
-                        print(f"❌ Ativo short '{config['short_asset']}' não encontrado")
-                        return None
-                    all_assets = selected_assets + [config['short_asset']]
+                # Shorts fixos configurados (podem ser vários), disponíveis neste período
+                short_weights_cfg = config.get('short_weights', {})
+                short_assets = [a for a in short_weights_cfg if a in df_otim.columns]
+                # Um ativo não pode ser long (via ranking) e short ao mesmo tempo
+                if short_assets:
+                    selected_assets = [a for a in selected_assets if a not in short_assets]
+                use_shorts_step = bool(config['use_shorts'] and short_assets and len(selected_assets) >= 1)
+
+                if use_shorts_step:
+                    all_assets = selected_assets + short_assets
                 else:
                     all_assets = selected_assets
 
-                self.optimizer = PortfolioOptimizer(self.df, all_assets if config['use_shorts'] else selected_assets)
+                self.optimizer = PortfolioOptimizer(self.df, all_assets)
 
                 if hasattr(self.optimizer, 'risk_free_rate_total'):
                     risk_free_rate = self.optimizer.risk_free_rate_total
@@ -3740,12 +3871,12 @@ Isso ajuda a detectar:
 
                 target_return = config.get('target_return')
 
-                if config['use_shorts'] and config['short_asset']:
-                    print(f"🔄 OTIMIZAÇÃO COM SHORTS")
+                if use_shorts_step:
+                    print(f"🔄 OTIMIZAÇÃO COM SHORTS ({len(short_assets)} ativos)")
                     self.result = self.optimizer.optimize_portfolio_with_shorts(
                         selected_assets=selected_assets,
-                        short_assets=[config['short_asset']],
-                        short_weights={config['short_asset']: config['short_weight']},
+                        short_assets=short_assets,
+                        short_weights={a: short_weights_cfg[a] for a in short_assets},
                         objective_type=objective_map[config['objective']],
                         target_return=target_return,
                         max_weight=config['weight_max'],

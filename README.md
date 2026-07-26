@@ -442,7 +442,9 @@ Selecione um ou mais objetivos. O sistema testará cada combinação para cada o
 
 ### Posições Vendidas (Opcional)
 
-Habilite e configure um ativo para posição short que será incluído em todos os steps automaticamente. Informe o nome exato do ativo (deve estar na planilha) e o peso em percentual negativo.
+Marque **'Habilitar posições short'** e clique em **📋 Selecionar Ativos para Short** para abrir a janela de seleção. Nela você pode escolher **um ou mais ativos** para posição vendida, cada um com seu peso em percentual negativo (com busca, seleção em lote e peso padrão, igual à aba Short/Hedge). Os ativos e pesos escolhidos são fixos e aplicados a **todos os steps** do walk-forward. Um resumo dos shorts configurados aparece na própria aba.
+
+💡 Os candidatos a short são todos os ativos carregados (aba Dados). Em cada step, se um ativo short também tiver sido escolhido como long pelo ranking, ele é tratado apenas como short. Ativos short ausentes no período de um step são ignorados naquele step.
 
 ### Configurações Globais
 
