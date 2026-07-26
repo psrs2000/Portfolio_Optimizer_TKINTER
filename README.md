@@ -324,6 +324,8 @@ Métricas calculadas sobre o período de treinamento (janela de otimização):
 | Taxa Ref Período (%)    | Retorno acumulado da taxa de referência no período.                   |
 | Taxa Ref Anualizada (%) | Taxa de referência anualizada.                                        |
 | Excesso Período (%)     | Retorno do portfólio menos o retorno da referência no período.        |
+| Excesso Anualizado (%)  | Retorno anualizado do portfólio menos a taxa de referência anualizada. |
+| Excesso/Ref (%)         | Excesso anualizado dividido pela taxa de referência anualizada: quanto o portfólio superou a referência em termos relativos (ex.: 50% = rendeu 50% a mais que a referência). |
 | Dias                    | Número de dias corridos no período de otimização.                     |
 
 ## 8.2 Coluna OUT-OF-SAMPLE (Validação)
@@ -456,7 +458,7 @@ Marque **'Habilitar posições short'** e clique em **📋 Selecionar Ativos par
 
 ## 10.3 Estimar e Executar
 
-- Clique em **🧮 Calcular** para ver uma estimativa do número de configurações, testes totais e tempo esperado antes de executar.
+- Clique em **🧮 Calcular** para ver uma estimativa do número de configurações, testes totais, dias do período e steps por configuração antes de executar.
 - Clique em **🚀 INICIAR AUTO-OTIMIZAÇÃO**. O processo roda em thread separada para não travar a interface.
 - O status no topo direito da aba atualiza em tempo real: configuração atual sendo testada, resultado (✅ ou ❌) e número de steps.
 

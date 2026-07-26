@@ -2848,6 +2848,8 @@ class PortfolioOptimizerGUI:
         risk_free_annual = (1 + metrics['risk_free_rate']) ** (365/n_dias_otim) - 1
         sharpe_corrected = (metrics['annual_return'] - risk_free_annual) / metrics['volatility']
 
+        excess_annual_in = metrics['annual_return'] - risk_free_annual
+        ratio_in = f"{excess_annual_in / risk_free_annual * 100:.1f}%" if risk_free_annual != 0 else "n/d"
 
         # Métricas In-Sample COMPLETAS
         in_sample_text = f"""🎯 RETORNOS:
@@ -2869,6 +2871,8 @@ class PortfolioOptimizerGUI:
         • Taxa Ref Período: {metrics['risk_free_rate']:.2%}
         • Taxa Ref Anualizada: {risk_free_annual*100:.2f}
         • Excesso Período: {metrics['excess_return']:.2%}
+        • Excesso Anualizado: {excess_annual_in:.2%}
+        • Excesso/Ref: {ratio_in}
 
         📅 PERÍODO:
         • Dias: {n_dias_otim}"""
@@ -2980,7 +2984,8 @@ class PortfolioOptimizerGUI:
                         
                         # Excesso de retorno
                         excess_return_valid = annual_return_valid - risk_free_annual_valid
-                        
+                        ratio_valid = f"{excess_return_valid / risk_free_annual_valid * 100:.1f}%" if risk_free_annual_valid != 0 else "n/d"
+
                         # Texto das métricas out-of-sample
                         out_sample_text = f"""🎯 RETORNOS:
     • Total: {retorno_total_valid:.2%}
@@ -2996,6 +3001,7 @@ class PortfolioOptimizerGUI:
     🛡️ REFERÊNCIA:
     • Taxa Ref Anualizada: {risk_free_annual_valid:.2%}
     • Excesso Anualizado: {excess_return_valid:.2%}
+    • Excesso/Ref: {ratio_valid}
 
     📅 PERÍODO:
     • Dias: {n_dias_valid}"""
@@ -3924,29 +3930,12 @@ class PortfolioOptimizerGUI:
             
             total_configs = otim_count * rebal_count * obj_count
             total_tests = total_steps_estimado * obj_count
-            
-            # Fator de tempo ajustado para muitos steps
-            if total_steps_estimado > 100:
-                time_factor = 0.8  # Mais rápido para muitos steps
-            else:
-                time_factor = 0.95  # Fator original para poucos steps
-            
-            estimated_time = total_tests * time_factor
-            
-            if estimated_time < 60:
-                time_str = f"{estimated_time:.0f} segundos"
-            elif estimated_time < 3600:
-                time_str = f"{estimated_time/60:.1f} minutos"  
-            else:
-                time_str = f"{estimated_time/3600:.1f} horas"
-            
-            # 🔥 VERSÃO LIMPA - SEM APROVEITAMENTO
+
             avg_steps = total_steps_estimado / (otim_count * rebal_count) if (otim_count * rebal_count) > 0 else 0
-            
+
             self.estimate_label.config(
                 text=f"📊 {total_configs} configurações\n"
-                     f"⚡ ~{total_tests:,} testes\n" 
-                     f"⏱️ ~{time_str}\n"
+                     f"⚡ ~{total_tests:,} testes\n"
                      f"📅 {total_calendar_days} dias\n"
                      f"📈 ~{avg_steps:.0f} steps/config",
                 font=('TkDefaultFont', 8)
