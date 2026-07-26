@@ -6,23 +6,26 @@ Documento de referência completo para operação do sistema de
 
 otimização de portfólio com walk-forward e ranking automático de ativos.
 
-Versão 1.0 • 2026
+Versão 2.0 • 2026
 
 # 1\. Introdução
 
-O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com interface gráfica Tkinter. Seu objetivo é auxiliar analistas e gestores a construir carteiras de ativos financeiros de forma quantitativa, combinando técnicas de otimização matemática, análise de risco e validação fora da amostra (out-of-sample).
+O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python, disponível em duas versões de interface gráfica equivalentes — **Tkinter** (`desktop_app_FULL.py`) e **PyQt5** (`desktop_app_qt.py`). Ambas compartilham exatamente o mesmo motor de cálculo (`optimizer.py`) e oferecem as mesmas funcionalidades e abas; escolha a que preferir. Seu objetivo é auxiliar analistas e gestores a construir carteiras de ativos financeiros de forma quantitativa, combinando técnicas de otimização matemática, análise de risco e validação fora da amostra (out-of-sample).
 
 ## 1.1 Principais Funcionalidades
 
+- Duas interfaces gráficas equivalentes: Tkinter e PyQt5.
 - Carregamento de dados históricos de preços via planilha Excel.
 - Configuração de janelas temporais separadas para otimização e validação.
-- Múltiplos objetivos de otimização: Sharpe, risco mínimo, linearidade e outros.
-- Restrições globais e individuais de peso por ativo.
+- Múltiplos objetivos de otimização: Sharpe, Sortino, risco mínimo, linearidade e outros.
+- Restrições globais e individuais de peso por ativo, com importação via arquivo Excel/CSV.
+- Meta de retorno opcional: exige que o portfólio supere a referência por um percentual definido.
 - Suporte a posições vendidas (short selling / hedge).
 - Sistema de ranking automático de ativos com pesos personalizáveis.
 - Resultados in-sample e out-of-sample comparados lado a lado.
 - Tabelas de retornos mensais com cálculo de excesso sobre a referência.
 - Auto-Otimização com walk-forward sobre múltiplas combinações de parâmetros.
+- Solver com multi-start automático para escapar de ótimos locais/travamentos.
 - Exportação de resultados para CSV e Excel.
 
 ## 1.2 Requisitos do Sistema
@@ -31,19 +34,23 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 | ---------------------- | -------------------------------------------- |
 | Sistema Operacional    | Windows 10/11, Linux ou macOS                |
 | Python                 | 3.8 ou superior (recomendado 3.10+)          |
-| Bibliotecas principais | pandas, numpy, scipy, matplotlib, tkcalendar |
+| Bibliotecas comuns     | pandas, numpy, scipy, matplotlib, openpyxl   |
+| Versão Tkinter         | tkcalendar (para o seletor de datas)         |
+| Versão PyQt5           | PyQt5                                        |
 | Módulo adicional       | optimizer.py (incluso no projeto)            |
 | Resolução de tela      | Mínimo 1400 × 900 pixels                     |
-| Formato de dados       | Planilha Excel (.xlsx ou .xls)               |
+| Formato de dados       | Planilha Excel (.xlsx ou .xls) e CSV         |
 
 ## 1.3 Como Iniciar o Programa
 
 - Abra o terminal (Prompt de Comando ou PowerShell no Windows).
-- Navegue até a pasta onde o arquivo desktop_app_FULL.py está localizado.
-- Execute o comando: **python desktop_app_FULL.py**
+- Navegue até a pasta onde os arquivos do projeto estão localizados.
+- Execute a versão desejada:
+  - **Tkinter:** `python desktop_app_FULL.py`
+  - **PyQt5:** `python desktop_app_qt.py`
 - A janela principal do programa será exibida.
 
-💡 O arquivo optimizer.py precisa estar na mesma pasta que desktop_app_FULL.py para o programa funcionar corretamente.
+💡 O arquivo optimizer.py precisa estar na mesma pasta que o aplicativo (`desktop_app_FULL.py` ou `desktop_app_qt.py`) para o programa funcionar corretamente. As duas versões são intercambiáveis e produzem os mesmos resultados.
 
 # 2\. Estrutura da Interface
 
@@ -128,6 +135,7 @@ Selecione um dos objetivos disponíveis pelo botão de rádio:
 | **Objetivo**                        | **Descrição**                                                                                                                          |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | Maximizar Sharpe Ratio              | Maximiza o retorno excedente à taxa de referência por unidade de risco. Objetivo mais comum para carteiras balanceadas.                |
+| Maximizar Sortino Ratio             | Semelhante ao Sharpe, mas penaliza apenas a volatilidade de queda (downside). Não pune oscilações de alta — útil quando a preocupação é o risco de perda.  |
 | Minimizar Risco                     | Minimiza a volatilidade do portfólio independentemente do retorno. Ideal para perfis conservadores.                                    |
 | Maximizar Inclinação                | Maximiza a inclinação da regressão linear do retorno acumulado. Prioriza ativos com tendência de alta consistente.                     |
 | Maximizar Inclinação/\[(1-R²)×Vol\] | Combina a inclinação com a qualidade da linearidade e a volatilidade. Penaliza ativos com retornos irregulares.                        |
@@ -150,7 +158,20 @@ A taxa de referência é usada para calcular o Sharpe Ratio e o excesso de retor
 - **Detecção automática:** se a planilha contiver uma coluna de benchmark, o campo de taxa manual é desabilitado e a taxa é extraída automaticamente dos dados.
 - **Taxa manual:** quando não houver coluna de benchmark, informe o valor acumulado no período de otimização (ex.: para 12% ao ano em um período de 2 anos, informe 25.44, que corresponde a (1,12)² − 1 ≈ 25,44%).
 
-## 4.4 Executar a Otimização
+## 4.4 Meta de Retorno (Opcional)
+
+A meta de retorno permite exigir que o portfólio supere a referência por um percentual definido, combinando essa exigência com o objetivo escolhido acima. Na prática, o otimizador busca **atingir a meta com o menor risco possível** — o ponto ideal entre "maximizar retorno" e "minimizar risco".
+
+- Marque **'Exigir meta de retorno mínima'** e informe o valor no campo **'Meta (% acima da referência)'**.
+- A meta é **relativa** à referência: o alvo é `Referência × (1 + Meta ÷ 100)`. Exemplo: com referência de 12% no período e meta de 5%, o alvo é 12% × 1,05 = **12,6%**.
+- O otimizador maximiza o objetivo escolhido garantindo **pelo menos** esse retorno no período.
+- Se a meta for **inatingível** com os ativos e limites atuais, o sistema não falha: retorna a carteira de **maior retorno possível** e avisa que a meta não foi atingida.
+
+⚠️ Como a meta é relativa à referência, ela depende de uma referência maior que zero (detectada na planilha ou informada manualmente). Sem referência, o alvo é zero e a meta não tem efeito.
+
+💡 A mensagem de conclusão informa se a meta foi atingida e mostra o alvo calculado (ex.: 'referência 12,00% × (1+5,0%) = 12,60%').
+
+## 4.5 Executar a Otimização
 
 **Clique em 🚀 OTIMIZAR PORTFÓLIO** para iniciar o processo. Uma janela de progresso será exibida enquanto o algoritmo executa. Ao concluir, o programa navegará automaticamente para a aba Resultados.
 
@@ -162,6 +183,23 @@ Esta aba permite definir limites de peso específicos para ativos individuais, s
 
 - Marque o checkbox 'Habilitar limites específicos para ativos selecionados'.
 - Clique em **📋 Configurar Restrições Individuais** para abrir a janela de configuração.
+
+## 5.1.1 Importar Restrições de Arquivo (Excel/CSV)
+
+Em vez de digitar os limites manualmente, você pode importá-los de uma planilha com o botão **📂 Importar Restrições (Excel/CSV)**. É especialmente útil quando alguém já lhe entrega os pesos de uma carteira pronta.
+
+Formatos aceitos (nomes de coluna flexíveis, sem diferenciar maiúsculas/minúsculas):
+
+- **`Ativo, Min, Max`** — define faixas de mínimo e máximo por ativo.
+- **`Ativo, Peso`** — fixa mínimo = máximo = peso. **Quando os pesos somam 100%, o otimizador é forçado exatamente àquela composição — o software passa a atuar como um analisador do portfólio informado.**
+
+Detalhes da leitura:
+
+- Os valores são interpretados em **percentual** (ex.: `30` = 30%); se todos forem ≤ 1, são tratados como fração (ex.: `0.30` = 30%).
+- Aceita CSV com separador `,`, `;` ou tabulação, e vírgula decimal (ex.: `30,5`).
+- Ao importar, o sistema **seleciona automaticamente** na aba Dados exatamente os ativos do arquivo que existem nos dados carregados, **ativa** as restrições individuais e preenche o resumo. Ativos do arquivo que não existirem nos dados são reportados e ignorados.
+
+💡 Carregue os dados (aba Dados) antes de importar, pois o sistema casa os ativos do arquivo com os ativos disponíveis na planilha carregada.
 
 ## 5.2 Janela de Configuração
 
@@ -396,9 +434,11 @@ Definem ao mesmo tempo a duração do período out-of-sample e a frequência de 
 Selecione um ou mais objetivos. O sistema testará cada combinação para cada objetivo selecionado:
 
 - Maximizar Sharpe
+- Maximizar Sortino
 - Minimizar Risco
 - Maximizar Inc/\[(1-R²)×Vol\]
 - Qualidade da Linearidade
+- Linearidade do Excesso
 
 ### Posições Vendidas (Opcional)
 
@@ -410,6 +450,7 @@ Habilite e configure um ativo para posição short que será incluído em todos 
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Score Min / Max (0-100) | Intervalo do ranking de ativos. Ativos com índice fora deste intervalo são excluídos da otimização em cada step. Valor 0-100 = todos os ativos. |
 | Peso Min (%) / Max (%)  | Limites globais de peso aplicados em cada step da otimização.                                                                                   |
+| Meta de Retorno         | Opcional. Marque 'Exigir meta' e informe o % acima da referência. A meta (`referência × (1 + %)`) é aplicada em cada step do walk-forward, relativa à referência daquele período. |
 
 ## 10.3 Estimar e Executar
 
@@ -491,6 +532,14 @@ Para obter os melhores resultados, siga esta sequência:
 - Correlações negativas podem ser desejáveis para ativos de hedge: ajuste o peso de correlação para valores negativos não é suportado diretamente, mas ativos com correlação negativa obterão scores menores, o que pode ser usado para identificá-los e inclui-los como short.
 - Recalcule o ranking sempre que mudar o período de análise, pois os parâmetros são recalculados com base nos dados do período configurado.
 
+## 12.6 Robustez da Otimização (Multi-Start)
+
+Alguns objetivos não-lineares (como Inclinação/\[(1-R²)×Vol\] e Linearidade do Excesso) podem, em certas configurações, fazer o otimizador "travar" no ponto de partida e devolver uma carteira de **pesos iguais** (todos os ativos com o mesmo percentual). Para evitar isso, o solver detecta automaticamente esse travamento e reinicia a busca a partir de vários pontos aleatórios, ficando com o melhor resultado.
+
+- **Sinal de travamento (versões antigas):** se você vir todos os ativos com peso exatamente igual (ex.: todos com 1,67%), é sinal de que a otimização não convergiu. Com o multi-start isso é corrigido automaticamente.
+- **Custo:** o multi-start só é acionado quando há travamento, então otimizações que convergem normalmente não ficam mais lentas. Nos casos travados, a otimização pode demorar mais alguns segundos (especialmente com muitos ativos), pois testa vários reinícios.
+- **Reprodutibilidade:** os reinícios usam uma semente fixa, então a mesma configuração sempre produz o mesmo resultado.
+
 # 13\. Glossário
 
 | **Termo**                      | **Definição**                                                                                                                                                            |
@@ -501,6 +550,9 @@ Para obter os melhores resultados, siga esta sequência:
 | Out-of-Sample                  | Período de validação, fora do intervalo de treinamento. Avalia se o modelo generaliza bem para dados não vistos.                                                         |
 | Walk-Forward                   | Metodologia de backtest que simula a operação real do portfólio: treina em uma janela, valida na seguinte, avança no tempo e repete.                                     |
 | Sharpe Ratio                   | (Retorno anualizado − Taxa de referência anualizada) ÷ Volatilidade anualizada.                                                                                          |
+| Sortino Ratio                  | Semelhante ao Sharpe, mas divide o excesso de retorno apenas pela volatilidade de queda (downside deviation), ignorando as oscilações de alta.                            |
+| Meta de Retorno                | Alvo de retorno relativo à referência, definido como Referência × (1 + Meta ÷ 100). O otimizador busca atingi-lo com o menor risco possível.                             |
+| Multi-Start                    | Estratégia do solver que reinicia a otimização a partir de vários pontos iniciais quando detecta travamento, escapando de ótimos locais e devolvendo o melhor resultado.  |
 | VaR 95%                        | Value at Risk: estimativa paramétrica da perda máxima esperada em 95% dos dias (μ − 1,65σ).                                                                              |
 | CVaR 95%                       | Conditional VaR: média das perdas nos 5% piores dias. Mede o risco de cauda (tail risk).                                                                                 |
 | R²                             | Coeficiente de determinação da regressão linear do retorno acumulado. Mede a linearidade da evolução do portfólio (valores próximos de 1 indicam tendência mais linear). |
