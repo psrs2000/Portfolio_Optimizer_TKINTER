@@ -213,6 +213,119 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
         print(f"❌ Erro no cálculo de ranking: {str(e)}")
         return None
 
+
+# =============================================================================
+# IMPORTAÇÃO DE RESTRIÇÕES (MÍN/MÁX OU PESOS) DE ARQUIVO EXCEL/CSV
+# =============================================================================
+
+def load_constraints_from_file(file_path):
+    """
+    Lê um arquivo Excel/CSV com restrições por ativo.
+
+    Formatos aceitos (nomes de coluna flexíveis, sem diferenciar maiúsculas):
+      • 'Ativo', 'Min', 'Max'  -> usa mínimo e máximo por ativo (faixas)
+      • 'Ativo', 'Peso'        -> fixa min = max = peso
+                                  (útil para ANALISAR um portfólio pronto:
+                                   quando os pesos somam 100%, o otimizador
+                                   é forçado exatamente àquela composição)
+
+    Valores em PERCENTUAL (ex.: 30 = 30%). Se TODOS os valores forem <= 1,
+    assume-se que já estão em fração (ex.: 0.30 = 30%).
+
+    Retorna: (constraints, warnings)
+      constraints = {ativo: {'min': fração, 'max': fração}}
+      warnings    = lista de avisos (strings)
+    """
+    warnings = []
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext in ('.xlsx', '.xls'):
+        df = pd.read_excel(file_path)
+    else:
+        # CSV: detecta separador automaticamente (vírgula, ponto-e-vírgula, tab)
+        df = pd.read_csv(file_path, sep=None, engine='python')
+
+    if df is None or df.empty or len(df.columns) < 2:
+        raise ValueError("Arquivo vazio ou sem colunas suficientes "
+                         "(mínimo: coluna de ativo + 1 coluna de valor).")
+
+    low = {c: str(c).strip().lower() for c in df.columns}
+
+    def find(terms, exclude=()):
+        for col, name in low.items():
+            if any(t in name for t in terms) and not any(e in name for e in exclude):
+                return col
+        return None
+
+    asset_col = find(['ativo', 'asset', 'ticker', 'papel', 'codigo', 'código', 'symbol', 'nome'])
+    min_col = find(['min', 'mín'])
+    max_col = find(['max', 'máx'])
+    weight_col = find(['peso', 'weight', 'quant', 'aloca', 'aloc', 'percent', 'participa'])
+
+    if asset_col is None:
+        asset_col = df.columns[0]
+
+    def to_float(v):
+        if pd.isna(v):
+            return None
+        s = str(v).strip().replace('%', '').replace(' ', '')
+        if s == '':
+            return None
+        if ',' in s and '.' in s:
+            s = s.replace('.', '').replace(',', '.')   # 1.234,56 -> 1234.56
+        elif ',' in s:
+            s = s.replace(',', '.')                     # 30,5 -> 30.5
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    raw = {}
+    if min_col is not None and max_col is not None:
+        for _, row in df.iterrows():
+            asset = str(row[asset_col]).strip()
+            if not asset or asset.lower() == 'nan':
+                continue
+            mn = to_float(row[min_col])
+            mx = to_float(row[max_col])
+            if mn is None or mx is None:
+                warnings.append(f"'{asset}': valor mín/máx inválido, ignorado.")
+                continue
+            raw[asset] = [mn, mx]
+    else:
+        # Coluna única de peso -> min = max = peso
+        if weight_col is None:
+            weight_col = df.columns[1]   # assume 2ª coluna como peso
+        for _, row in df.iterrows():
+            asset = str(row[asset_col]).strip()
+            if not asset or asset.lower() == 'nan':
+                continue
+            w = to_float(row[weight_col])
+            if w is None:
+                warnings.append(f"'{asset}': peso inválido, ignorado.")
+                continue
+            raw[asset] = [w, w]
+
+    if not raw:
+        raise ValueError("Nenhum ativo válido encontrado no arquivo.")
+
+    # Percentual (0-100) vs fração (0-1): decide pela maior magnitude presente
+    all_vals = [abs(v) for pair in raw.values() for v in pair]
+    max_val = max(all_vals) if all_vals else 0
+    scale = 1.0 if max_val <= 1.0 else 0.01
+
+    constraints = {}
+    for asset, (mn, mx) in raw.items():
+        mn *= scale
+        mx *= scale
+        if mn > mx:
+            mn, mx = mx, mn
+            warnings.append(f"'{asset}': mín > máx, valores invertidos.")
+        constraints[asset] = {'min': max(0.0, mn), 'max': max(0.0, mx)}
+
+    return constraints, warnings
+
+
 class PortfolioOptimizerGUI:
     def __init__(self, root):
         self.root = root
@@ -797,6 +910,7 @@ class PortfolioOptimizerGUI:
         # Lista COMPLETA de objetivos (como no Streamlit)
         self.base_objectives = [
             "Maximizar Sharpe Ratio",
+            "Maximizar Sortino Ratio",
             "Minimizar Risco",
             "Maximizar Inclinação",
             "Maximizar Inclinação/[(1-R²)×Vol]",
@@ -860,7 +974,29 @@ class PortfolioOptimizerGUI:
         self.risk_free_var = tk.DoubleVar(value=0.0)
         self.manual_risk_entry = ttk.Entry(manual_frame, textvariable=self.risk_free_var, width=10)
         self.manual_risk_entry.pack(anchor='w', pady=2)
-        
+
+        # 3b. Meta de Retorno (opcional)
+        meta_frame = ttk.LabelFrame(scrollable_frame, text="🎯 Meta de Retorno (opcional)", padding="10")
+        meta_frame.pack(fill='x', padx=10, pady=5)
+
+        self.use_meta = tk.BooleanVar(value=False)
+        ttk.Checkbutton(meta_frame, text="Exigir meta de retorno mínima",
+                        variable=self.use_meta).pack(anchor='w')
+
+        meta_row = ttk.Frame(meta_frame)
+        meta_row.pack(fill='x', pady=2)
+        ttk.Label(meta_row, text="Meta (% acima da referência):").pack(side='left')
+        self.meta_var = tk.DoubleVar(value=5.0)
+        ttk.Entry(meta_row, textvariable=self.meta_var, width=8).pack(side='left', padx=(5, 0))
+
+        ttk.Label(meta_frame,
+                  text="Combina com o objetivo escolhido acima: maximiza o objetivo garantindo retorno "
+                       "de PELO MENOS referência × (1 + meta/100) no período (ex.: referência 12% e meta "
+                       "5% → alvo 12,6%). Na prática é o menor risco que alcança a meta. "
+                       "Se a meta for inatingível, retorna a carteira de MAIOR retorno possível e avisa.",
+                  font=('TkDefaultFont', 8), foreground='gray',
+                  wraplength=700, justify='left').pack(anchor='w', pady=(5, 0))
+
         # 4. Botão Otimizar
         ttk.Button(
             scrollable_frame, 
@@ -881,12 +1017,27 @@ class PortfolioOptimizerGUI:
         # Checkbox para habilitar restrições
         self.use_individual_constraints = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            frame, 
-            text="Habilitar limites específicos para ativos selecionados", 
+            frame,
+            text="Habilitar limites específicos para ativos selecionados",
             variable=self.use_individual_constraints,
             command=self.toggle_individual_constraints
         ).pack(anchor='w', pady=5)
-        
+
+        # Importar restrições de arquivo Excel/CSV
+        import_frame = ttk.Frame(frame)
+        import_frame.pack(anchor='w', fill='x', pady=(0,5))
+        ttk.Button(
+            import_frame,
+            text="📂 Importar Restrições (Excel/CSV)",
+            command=self.import_constraints_file
+        ).pack(side='left')
+        ttk.Label(
+            frame,
+            text="Colunas aceitas: 'Ativo, Min, Max' (faixas) ou 'Ativo, Peso' "
+                 "(pesos fixos → analisa o portfólio). Valores em % (ex.: 30 = 30%).",
+            font=('TkDefaultFont', 8), foreground='gray', wraplength=700, justify='left'
+        ).pack(anchor='w', pady=(0,5))
+
         # Frame para scroll das restrições
         self.constraints_canvas = tk.Canvas(frame)
         constraints_scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.constraints_canvas.yview)
@@ -906,7 +1057,88 @@ class PortfolioOptimizerGUI:
         # Label inicial
         self.constraints_info = ttk.Label(self.constraints_frame, text="Carregue dados e selecione ativos primeiro")
         self.constraints_info.pack(pady=20)
-        
+
+    def import_constraints_file(self):
+        """Importar restrições mín/máx (ou pesos) de um arquivo Excel/CSV."""
+        if self.assets_listbox.size() == 0:
+            messagebox.showerror("Erro", "Carregue os dados primeiro (aba Dados)!")
+            return
+
+        file_path = filedialog.askopenfilename(
+            title="Importar restrições (Excel/CSV)",
+            filetypes=[("Planilhas", "*.xlsx *.xls *.csv"),
+                       ("Excel", "*.xlsx *.xls"),
+                       ("CSV", "*.csv"),
+                       ("Todos", "*.*")]
+        )
+        if not file_path:
+            return
+
+        try:
+            constraints, warnings = load_constraints_from_file(file_path)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Falha ao ler o arquivo:\n{str(e)}")
+            return
+
+        self._apply_imported_constraints(constraints, warnings)
+
+    def _apply_imported_constraints(self, constraints, warnings):
+        """Casa os ativos do arquivo com os dados, seleciona e ativa as restrições."""
+        available = list(self.assets_listbox.get(0, tk.END))
+        avail_lower = {a.lower(): a for a in available}
+
+        matched = {}
+        not_found = []
+        for asset, lim in constraints.items():
+            if asset in available:
+                matched[asset] = lim
+            elif asset.lower() in avail_lower:
+                matched[avail_lower[asset.lower()]] = lim
+            else:
+                not_found.append(asset)
+
+        if not matched:
+            exemplos = ', '.join(list(constraints.keys())[:10])
+            messagebox.showwarning(
+                "Atenção",
+                "Nenhum ativo do arquivo corresponde aos ativos carregados.\n"
+                f"Ativos no arquivo: {exemplos}")
+            return
+
+        # Selecionar exatamente os ativos importados e ativar restrições
+        self.use_individual_constraints.set(True)
+        self.individual_constraints = matched
+
+        self.assets_listbox.selection_clear(0, tk.END)
+        for i in range(self.assets_listbox.size()):
+            if self.assets_listbox.get(i) in matched:
+                self.assets_listbox.selection_set(i)
+
+        self.update_advanced_widgets()
+        try:
+            self.update_selection_info()
+        except Exception:
+            pass
+
+        # Diagnóstico: portfólio (min == max) e soma
+        is_portfolio = all(abs(v['min'] - v['max']) < 1e-9 for v in matched.values())
+        soma = sum((v['min'] + v['max']) / 2 for v in matched.values()) * 100
+
+        msg = f"✅ {len(matched)} ativos importados e selecionados."
+        if is_portfolio:
+            msg += f"\n📊 Modo portfólio (pesos fixos). Soma = {soma:.1f}%."
+            if abs(soma - 100) < 0.5:
+                msg += "\n🎯 Soma ≈ 100%: o software atuará como analisador deste portfólio."
+        if not_found:
+            extra = ', '.join(not_found[:8]) + ('...' if len(not_found) > 8 else '')
+            msg += f"\n⚠️ {len(not_found)} não encontrados nos dados: {extra}"
+        if warnings:
+            msg += "\n\n" + "\n".join(warnings[:6])
+            if len(warnings) > 6:
+                msg += "\n..."
+
+        messagebox.showinfo("Importação concluída", msg)
+
     def setup_short_tab(self):
         """Configurar aba de short selling"""
         frame = ttk.LabelFrame(self.tab_short, text="🔄 Posições Short / Hedge", padding="10")
@@ -2393,10 +2625,11 @@ class PortfolioOptimizerGUI:
         if not self.use_individual_constraints.get():
             return None
         
-        # Usar self.individual_constraints diretamente (já configurado)
+        # Habilitado mas sem nenhuma restrição configurada (ex.: após "Limpar Todos"):
+        # devolver dict vazio -> otimizador usa os limites globais e NÃO aborta.
         if not hasattr(self, 'individual_constraints') or not self.individual_constraints:
-            return None
-        
+            return {}
+
         # Validar restrições
         for asset, limits in self.individual_constraints.items():
             min_val = limits['min']
@@ -2499,6 +2732,7 @@ class PortfolioOptimizerGUI:
             # Mapeamento completo de objetivos
             objective_map = {
                 "Maximizar Sharpe Ratio": 'sharpe',
+                "Maximizar Sortino Ratio": 'sortino',
                 "Minimizar Risco": 'volatility',
                 "Maximizar Inclinação": 'slope',
                 "Maximizar Inclinação/[(1-R²)×Vol]": 'hc10',
@@ -2515,10 +2749,13 @@ class PortfolioOptimizerGUI:
                 risk_free_rate = self.optimizer.risk_free_rate_total
             else:
                 risk_free_rate = self.risk_free_var.get() / 100
-            
+
+            # Meta de retorno (opcional): excesso mínimo sobre a referência no período
+            target_return = self.meta_var.get() / 100 if self.use_meta.get() else None
+
             status_label.config(text="Executando otimização...")
             self.root.update()
-            
+
             # EXECUTAR OTIMIZAÇÃO com todas as funcionalidades
             if len(short_assets) > 0:
                 # Otimização com shorts
@@ -2527,6 +2764,7 @@ class PortfolioOptimizerGUI:
                     short_assets=short_assets,
                     short_weights=short_weights,
                     objective_type=objective_type,
+                    target_return=target_return,
                     max_weight=max_weight,
                     min_weight=min_weight,
                     risk_free_rate=risk_free_rate,
@@ -2536,21 +2774,22 @@ class PortfolioOptimizerGUI:
                 # Otimização normal
                 self.result = self.optimizer.optimize_portfolio(
                     objective_type=objective_type,
+                    target_return=target_return,
                     max_weight=max_weight,
                     min_weight=min_weight,
                     risk_free_rate=risk_free_rate,
                     individual_constraints=individual_constraints
                 )
-            
+
             # Fechar janela de progresso
             progress_window.destroy()
-            
+
             if self.result['success']:
                 self.display_results()
                 self.display_monthly_tables()  # NOVA: Exibir tabelas mensais
                 self.export_csv_btn.config(state='normal')
                 self.export_excel_btn.config(state='normal')
-                messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!")
+                messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!" + self._meta_message())
                 # Mudar para aba de resultados
                 self.notebook.select(self.tab_results)
             else:
@@ -2560,7 +2799,21 @@ class PortfolioOptimizerGUI:
             if 'progress_window' in locals():
                 progress_window.destroy()
             messagebox.showerror("Erro", f"Erro durante otimização:\n{str(e)}")
-            
+
+    def _meta_message(self):
+        """Texto sobre o resultado da meta (vazio se meta não foi usada)."""
+        if not self.result or not self.result.get('meta_used'):
+            return ""
+        meta = self.result['meta_target'] * 100
+        ref = self.result['meta_ref'] * 100
+        req = self.result['meta_required'] * 100
+        ach = self.result['meta_achieved'] * 100
+        if self.result.get('meta_atingida'):
+            return (f"\n\n🎯 Meta atingida: retorno do período = {ach:.2f}% "
+                    f"(alvo = referência {ref:.2f}% × (1+{meta:.1f}%) = {req:.2f}%).")
+        return (f"\n\n⚠️ Meta NÃO atingida com os limites atuais.\n"
+                f"Melhor possível: retorno = {ach:.2f}% (alvo = {req:.2f}%).")
+
     def display_results(self):
         """Exibir resultados com layout horizontal (In-Sample | Out-of-Sample | Comparação)"""
         if not self.result or not self.result['success']:
@@ -3309,9 +3562,11 @@ class PortfolioOptimizerGUI:
         
         self.objectives = {
             'sharpe': tk.BooleanVar(value=True),
+            'sortino': tk.BooleanVar(value=False),
             'volatility': tk.BooleanVar(value=False),
             'hc10': tk.BooleanVar(value=False),
-            'quality_linear': tk.BooleanVar(value=False)
+            'quality_linear': tk.BooleanVar(value=False),
+            'excess_hc10': tk.BooleanVar(value=False)
         }
         
         # Objetivos em grid compacto
@@ -3320,9 +3575,11 @@ class PortfolioOptimizerGUI:
         
         obj_labels = {
             'sharpe': 'Maximizar Sharpe',
+            'sortino': 'Maximizar Sortino',
             'volatility': 'Minimizar Risco',
             'hc10': 'Maximizar Inc/[(1-R²)×Vol]',
-            'quality_linear': 'Qualidade da Linearidade'
+            'quality_linear': 'Qualidade da Linearidade',
+            'excess_hc10': 'Linearidade do Excesso'
         }
         
         for i, (key, var) in enumerate(self.objectives.items()):
@@ -3391,7 +3648,17 @@ class PortfolioOptimizerGUI:
         self.weight_max_var = tk.DoubleVar(value=30)
         ttk.Entry(weight_frame, textvariable=self.weight_max_var, width=6).pack(side='left', padx=2)
         ttk.Label(weight_frame, text="%").pack(side='left')
-        
+
+        # Meta de Retorno (aplicada a cada step do walk-forward)
+        ttk.Label(config_right, text="🎯 Meta de Retorno:", font=('TkDefaultFont', 9, 'bold')).pack(anchor='w', pady=(6,0))
+        meta_auto_frame = ttk.Frame(config_right)
+        meta_auto_frame.pack(fill='x', pady=2)
+        self.use_auto_meta = tk.BooleanVar(value=False)
+        ttk.Checkbutton(meta_auto_frame, text="Exigir meta", variable=self.use_auto_meta).pack(side='left')
+        self.auto_meta_var = tk.DoubleVar(value=5)
+        ttk.Entry(meta_auto_frame, textvariable=self.auto_meta_var, width=6).pack(side='left', padx=2)
+        ttk.Label(meta_auto_frame, text="% acima da ref.").pack(side='left')
+
         # ========== COLUNA DIREITA - CONTROLES E RESULTADOS ==========
         
         # Estimativa e controles (parte superior)
@@ -3649,9 +3916,11 @@ class PortfolioOptimizerGUI:
         # Mapeamento de objetivos para códigos internos
         obj_mapping = {
             'sharpe': 'sharpe',
+            'sortino': 'sortino',
             'volatility': 'volatility',
             'hc10': 'hc10',
-            'quality_linear': 'quality_linear'
+            'quality_linear': 'quality_linear',
+            'excess_hc10': 'excess_hc10'
         }
         
         # Gerar todas as combinações
@@ -3669,6 +3938,7 @@ class PortfolioOptimizerGUI:
                         'use_shorts': self.use_auto_shorts.get(),
                         'short_asset': self.short_asset_var.get() if self.use_auto_shorts.get() else None,
                         'short_weight': self.short_weight_var.get() / 100 if self.use_auto_shorts.get() else 0,
+                        'target_return': (self.auto_meta_var.get() / 100) if self.use_auto_meta.get() else None,
                         'desc': f"{otim_period}_{rebal_period}_{obj_key}"
                     }
                     configs.append(config)
@@ -3976,12 +4246,15 @@ class PortfolioOptimizerGUI:
 
                 objective_map = {
                     'sharpe': 'sharpe',
+                    'sortino': 'sortino',
                     'volatility': 'volatility',
                     'hc10': 'hc10',
-                    'quality_linear': 'quality_linear'
+                    'quality_linear': 'quality_linear',
+                    'excess_hc10': 'excess_hc10'
                 }
 
                 # Executar otimização
+                target_return = config.get('target_return')
                 if config['use_shorts'] and config['short_asset']:
                     print(f"🔄 OTIMIZAÇÃO COM SHORTS")
                     self.result = self.optimizer.optimize_portfolio_with_shorts(
@@ -3989,6 +4262,7 @@ class PortfolioOptimizerGUI:
                         short_assets=[config['short_asset']],
                         short_weights={config['short_asset']: config['short_weight']},
                         objective_type=objective_map[config['objective']],
+                        target_return=target_return,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
@@ -3998,6 +4272,7 @@ class PortfolioOptimizerGUI:
                     print(f"📊 OTIMIZAÇÃO NORMAL (SEM SHORTS)")
                     self.result = self.optimizer.optimize_portfolio(
                         objective_type=objective_map[config['objective']],
+                        target_return=target_return,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
@@ -4257,9 +4532,11 @@ class PortfolioOptimizerGUI:
         # Mapear objetivos
         obj_names = {
             'sharpe': 'Sharpe',
+            'sortino': 'Sortino',
             'volatility': 'MinRisco',
             'hc10': 'Inc/[(1-R²)×Vol]',
-            'quality_linear': 'Qualidade'
+            'quality_linear': 'Qualidade',
+            'excess_hc10': 'Lin.Excesso'
         }
         
         # Inserir resultados

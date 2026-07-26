@@ -230,6 +230,118 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
 
 
 # =============================================================================
+# IMPORTAÇÃO DE RESTRIÇÕES (MÍN/MÁX OU PESOS) DE ARQUIVO EXCEL/CSV
+# =============================================================================
+
+def load_constraints_from_file(file_path):
+    """
+    Lê um arquivo Excel/CSV com restrições por ativo.
+
+    Formatos aceitos (nomes de coluna flexíveis, sem diferenciar maiúsculas):
+      • 'Ativo', 'Min', 'Max'  -> usa mínimo e máximo por ativo (faixas)
+      • 'Ativo', 'Peso'        -> fixa min = max = peso
+                                  (útil para ANALISAR um portfólio pronto:
+                                   quando os pesos somam 100%, o otimizador
+                                   é forçado exatamente àquela composição)
+
+    Valores em PERCENTUAL (ex.: 30 = 30%). Se TODOS os valores forem <= 1,
+    assume-se que já estão em fração (ex.: 0.30 = 30%).
+
+    Retorna: (constraints, warnings)
+      constraints = {ativo: {'min': fração, 'max': fração}}
+      warnings    = lista de avisos (strings)
+    """
+    warnings = []
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext in ('.xlsx', '.xls'):
+        df = pd.read_excel(file_path)
+    else:
+        # CSV: detecta separador automaticamente (vírgula, ponto-e-vírgula, tab)
+        df = pd.read_csv(file_path, sep=None, engine='python')
+
+    if df is None or df.empty or len(df.columns) < 2:
+        raise ValueError("Arquivo vazio ou sem colunas suficientes "
+                         "(mínimo: coluna de ativo + 1 coluna de valor).")
+
+    low = {c: str(c).strip().lower() for c in df.columns}
+
+    def find(terms, exclude=()):
+        for col, name in low.items():
+            if any(t in name for t in terms) and not any(e in name for e in exclude):
+                return col
+        return None
+
+    asset_col = find(['ativo', 'asset', 'ticker', 'papel', 'codigo', 'código', 'symbol', 'nome'])
+    min_col = find(['min', 'mín'])
+    max_col = find(['max', 'máx'])
+    weight_col = find(['peso', 'weight', 'quant', 'aloca', 'aloc', 'percent', 'participa'])
+
+    if asset_col is None:
+        asset_col = df.columns[0]
+
+    def to_float(v):
+        if pd.isna(v):
+            return None
+        s = str(v).strip().replace('%', '').replace(' ', '')
+        if s == '':
+            return None
+        if ',' in s and '.' in s:
+            s = s.replace('.', '').replace(',', '.')   # 1.234,56 -> 1234.56
+        elif ',' in s:
+            s = s.replace(',', '.')                     # 30,5 -> 30.5
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    raw = {}
+    if min_col is not None and max_col is not None:
+        for _, row in df.iterrows():
+            asset = str(row[asset_col]).strip()
+            if not asset or asset.lower() == 'nan':
+                continue
+            mn = to_float(row[min_col])
+            mx = to_float(row[max_col])
+            if mn is None or mx is None:
+                warnings.append(f"'{asset}': valor mín/máx inválido, ignorado.")
+                continue
+            raw[asset] = [mn, mx]
+    else:
+        # Coluna única de peso -> min = max = peso
+        if weight_col is None:
+            weight_col = df.columns[1]   # assume 2ª coluna como peso
+        for _, row in df.iterrows():
+            asset = str(row[asset_col]).strip()
+            if not asset or asset.lower() == 'nan':
+                continue
+            w = to_float(row[weight_col])
+            if w is None:
+                warnings.append(f"'{asset}': peso inválido, ignorado.")
+                continue
+            raw[asset] = [w, w]
+
+    if not raw:
+        raise ValueError("Nenhum ativo válido encontrado no arquivo.")
+
+    # Percentual (0-100) vs fração (0-1): decide pela maior magnitude presente
+    all_vals = [abs(v) for pair in raw.values() for v in pair]
+    max_val = max(all_vals) if all_vals else 0
+    scale = 1.0 if max_val <= 1.0 else 0.01
+
+    constraints = {}
+    for asset, (mn, mx) in raw.items():
+        mn *= scale
+        mx *= scale
+        if mn > mx:
+            mn, mx = mx, mn
+            warnings.append(f"'{asset}': mín > máx, valores invertidos.")
+        constraints[asset] = {'min': max(0.0, mn), 'max': max(0.0, mx)}
+
+    return constraints, warnings
+
+
+# =============================================================================
 # ADAPTADORES / HELPERS PARA APROXIMAR A API DO TKINTER
 # =============================================================================
 
@@ -989,6 +1101,7 @@ class PortfolioOptimizerGUI(QMainWindow):
 
         self.base_objectives = [
             "Maximizar Sharpe Ratio",
+            "Maximizar Sortino Ratio",
             "Minimizar Risco",
             "Maximizar Inclinação",
             "Maximizar Inclinação/[(1-R²)×Vol]",
@@ -1030,6 +1143,32 @@ class PortfolioOptimizerGUI(QMainWindow):
         risk_l.addWidget(self.manual_risk_entry)
         layout.addWidget(risk_box)
 
+        # 3b. Meta de Retorno (opcional)
+        meta_box = QGroupBox("🎯 Meta de Retorno (opcional)")
+        meta_l = QVBoxLayout(meta_box)
+        chk_meta = QCheckBox("Exigir meta de retorno mínima")
+        self.use_meta = BoolVar(chk_meta)
+        meta_l.addWidget(chk_meta)
+
+        meta_row = QHBoxLayout()
+        meta_row.addWidget(QLabel("Meta (% acima da referência):"))
+        self.meta_entry = QLineEdit()
+        self.meta_entry.setFixedWidth(80)
+        self.meta_var = NumVar(self.meta_entry, 5.0)
+        meta_row.addWidget(self.meta_entry)
+        meta_row.addStretch()
+        meta_l.addLayout(meta_row)
+
+        meta_hint = QLabel(
+            "Combina com o objetivo escolhido acima: maximiza o objetivo garantindo retorno "
+            "de PELO MENOS referência × (1 + meta/100) no período (ex.: referência 12% e meta "
+            "5% → alvo 12,6%). Na prática é o menor risco que alcança a meta. "
+            "Se a meta for inatingível, retorna a carteira de MAIOR retorno possível e avisa.")
+        meta_hint.setStyleSheet("color: gray;")
+        meta_hint.setWordWrap(True)
+        meta_l.addWidget(meta_hint)
+        layout.addWidget(meta_box)
+
         # 4. Botão Otimizar
         btn_opt = QPushButton("🚀 OTIMIZAR PORTFÓLIO")
         btn_opt.setStyleSheet(
@@ -1054,6 +1193,20 @@ class PortfolioOptimizerGUI(QMainWindow):
         chk.toggled.connect(self.toggle_individual_constraints)
         box_l.addWidget(chk)
 
+        # Importação de restrições a partir de arquivo
+        import_row = QHBoxLayout()
+        btn_import = QPushButton("📂 Importar Restrições (Excel/CSV)")
+        btn_import.clicked.connect(self.import_constraints_file)
+        import_row.addWidget(btn_import)
+        import_row.addStretch()
+        box_l.addLayout(import_row)
+
+        hint = QLabel("Colunas aceitas: 'Ativo, Min, Max' (faixas) ou 'Ativo, Peso' "
+                      "(pesos fixos → analisa o portfólio). Valores em % (ex.: 30 = 30%).")
+        hint.setStyleSheet("color: gray;")
+        hint.setWordWrap(True)
+        box_l.addWidget(hint)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         self.constraints_frame = QWidget()
@@ -1063,6 +1216,85 @@ class PortfolioOptimizerGUI(QMainWindow):
 
         self.constraints_info = QLabel("Carregue dados e selecione ativos primeiro")
         self.constraints_layout.addWidget(self.constraints_info)
+
+    def import_constraints_file(self):
+        """Importar restrições mín/máx (ou pesos) de um arquivo Excel/CSV."""
+        if self.assets_listbox.size() == 0:
+            messagebox.showerror("Erro", "Carregue os dados primeiro (aba Dados)!")
+            return
+
+        file_path = filedialog.askopenfilename(
+            title="Importar restrições (Excel/CSV)",
+            filetypes=[("Planilhas", "*.xlsx *.xls *.csv"),
+                       ("Excel", "*.xlsx *.xls"),
+                       ("CSV", "*.csv"),
+                       ("Todos", "*.*")]
+        )
+        if not file_path:
+            return
+
+        try:
+            constraints, warnings = load_constraints_from_file(file_path)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Falha ao ler o arquivo:\n{str(e)}")
+            return
+
+        self._apply_imported_constraints(constraints, warnings)
+
+    def _apply_imported_constraints(self, constraints, warnings):
+        """Casa os ativos do arquivo com os dados, seleciona e ativa as restrições."""
+        available = list(self.assets_listbox.get(0, END))
+        avail_lower = {a.lower(): a for a in available}
+
+        matched = {}
+        not_found = []
+        for asset, lim in constraints.items():
+            if asset in available:
+                matched[asset] = lim
+            elif asset.lower() in avail_lower:
+                matched[avail_lower[asset.lower()]] = lim
+            else:
+                not_found.append(asset)
+
+        if not matched:
+            exemplos = ', '.join(list(constraints.keys())[:10])
+            messagebox.showwarning(
+                "Atenção",
+                "Nenhum ativo do arquivo corresponde aos ativos carregados.\n"
+                f"Ativos no arquivo: {exemplos}")
+            return
+
+        # Selecionar exatamente os ativos importados e ativar restrições
+        self.use_individual_constraints.set(True)
+        self.individual_constraints = matched
+
+        self.assets_listbox.selection_clear(0, END)
+        for i in range(self.assets_listbox.size()):
+            if self.assets_listbox.get(i) in matched:
+                self.assets_listbox.selection_set(i)
+
+        self.update_advanced_widgets()
+        self._update_selection_info()
+
+        # Diagnóstico: portfólio (min == max) e soma
+        is_portfolio = all(abs(v['min'] - v['max']) < 1e-9 for v in matched.values())
+        soma = sum((v['min'] + v['max']) / 2 for v in matched.values()) * 100
+
+        msg = f"✅ {len(matched)} ativos importados e selecionados."
+        if is_portfolio:
+            msg += f"\n📊 Modo portfólio (pesos fixos). Soma = {soma:.1f}%."
+            if abs(soma - 100) < 0.5:
+                msg += "\n🎯 Soma ≈ 100%: o software atuará como analisador deste portfólio."
+        if not_found:
+            extra = ', '.join(not_found[:8]) + ('...' if len(not_found) > 8 else '')
+            msg += f"\n⚠️ {len(not_found)} não encontrados nos dados: {extra}"
+        if warnings:
+            msg += "\n\n" + "\n".join(warnings[:6])
+            if len(warnings) > 6:
+                msg += "\n..."
+
+        messagebox.showinfo("Importação concluída", msg)
+        self.notebook.setCurrentWidget(self.tab_advanced)
 
     # -------------------------------------------------------------------------
     # ABA 4: SHORT SELLING
@@ -2169,8 +2401,10 @@ class PortfolioOptimizerGUI(QMainWindow):
         if not self.use_individual_constraints.get():
             return None
 
+        # Habilitado mas sem nenhuma restrição configurada (ex.: após "Limpar Todos"):
+        # devolver dict vazio -> otimizador usa os limites globais e NÃO aborta.
         if not hasattr(self, 'individual_constraints') or not self.individual_constraints:
-            return None
+            return {}
 
         for asset, limits in self.individual_constraints.items():
             min_val = limits['min']
@@ -2261,6 +2495,7 @@ class PortfolioOptimizerGUI(QMainWindow):
 
             objective_map = {
                 "Maximizar Sharpe Ratio": 'sharpe',
+                "Maximizar Sortino Ratio": 'sortino',
                 "Minimizar Risco": 'volatility',
                 "Maximizar Inclinação": 'slope',
                 "Maximizar Inclinação/[(1-R²)×Vol]": 'hc10',
@@ -2277,6 +2512,9 @@ class PortfolioOptimizerGUI(QMainWindow):
             else:
                 risk_free_rate = self.risk_free_var.get() / 100
 
+            # Meta de retorno (opcional): excesso mínimo sobre a referência no período
+            target_return = self.meta_var.get() / 100 if self.use_meta.get() else None
+
             status_label.setText("Executando otimização...")
             QApplication.processEvents()
 
@@ -2286,6 +2524,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                     short_assets=short_assets,
                     short_weights=short_weights,
                     objective_type=objective_type,
+                    target_return=target_return,
                     max_weight=max_weight,
                     min_weight=min_weight,
                     risk_free_rate=risk_free_rate,
@@ -2294,6 +2533,7 @@ class PortfolioOptimizerGUI(QMainWindow):
             else:
                 self.result = self.optimizer.optimize_portfolio(
                     objective_type=objective_type,
+                    target_return=target_return,
                     max_weight=max_weight,
                     min_weight=min_weight,
                     risk_free_rate=risk_free_rate,
@@ -2310,7 +2550,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                     self.export_csv_btn.setEnabled(True)
                 if self.export_excel_btn is not None:
                     self.export_excel_btn.setEnabled(True)
-                messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!")
+                messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!" + self._meta_message())
                 self.notebook.setCurrentWidget(self.tab_results)
             else:
                 messagebox.showerror("Erro", f"❌ {self.result['message']}")
@@ -2319,6 +2559,20 @@ class PortfolioOptimizerGUI(QMainWindow):
             if progress_window is not None:
                 progress_window.close()
             messagebox.showerror("Erro", f"Erro durante otimização:\n{str(e)}")
+
+    def _meta_message(self):
+        """Texto sobre o resultado da meta (vazio se meta não foi usada)."""
+        if not self.result or not self.result.get('meta_used'):
+            return ""
+        meta = self.result['meta_target'] * 100
+        ref = self.result['meta_ref'] * 100
+        req = self.result['meta_required'] * 100
+        ach = self.result['meta_achieved'] * 100
+        if self.result.get('meta_atingida'):
+            return (f"\n\n🎯 Meta atingida: retorno do período = {ach:.2f}% "
+                    f"(alvo = referência {ref:.2f}% × (1+{meta:.1f}%) = {req:.2f}%).")
+        return (f"\n\n⚠️ Meta NÃO atingida com os limites atuais.\n"
+                f"Melhor possível: retorno = {ach:.2f}% (alvo = {req:.2f}%).")
 
     def display_results(self):
         if not self.result or not self.result['success']:
@@ -2897,10 +3151,12 @@ Isso ajuda a detectar:
         obj_box = QGroupBox("🎯 Objetivos de Otimização")
         obj_l = QVBoxLayout(obj_box)
         self.objectives = {}
-        obj_labels = {'sharpe': 'Maximizar Sharpe', 'volatility': 'Minimizar Risco',
-                      'hc10': 'Maximizar Inc/[(1-R²)×Vol]', 'quality_linear': 'Qualidade da Linearidade'}
-        for key, default in [('sharpe', True), ('volatility', False), ('hc10', False),
-                             ('quality_linear', False)]:
+        obj_labels = {'sharpe': 'Maximizar Sharpe', 'sortino': 'Maximizar Sortino',
+                      'volatility': 'Minimizar Risco', 'hc10': 'Maximizar Inc/[(1-R²)×Vol]',
+                      'quality_linear': 'Qualidade da Linearidade',
+                      'excess_hc10': 'Linearidade do Excesso'}
+        for key, default in [('sharpe', True), ('sortino', False), ('volatility', False),
+                             ('hc10', False), ('quality_linear', False), ('excess_hc10', False)]:
             cb = QCheckBox(obj_labels[key])
             cb.setChecked(default)
             obj_l.addWidget(cb)
@@ -2979,6 +3235,23 @@ Isso ajuda a detectar:
         weight_l.addStretch()
         cfg_right.addLayout(weight_l)
         config_l.addLayout(cfg_right, 1)
+
+        cfg_meta = QVBoxLayout()
+        lbl_m = QLabel("🎯 Meta de Retorno:")
+        lbl_m.setFont(bold())
+        cfg_meta.addWidget(lbl_m)
+        chk_auto_meta = QCheckBox("Exigir meta")
+        self.use_auto_meta = BoolVar(chk_auto_meta)
+        cfg_meta.addWidget(chk_auto_meta)
+        meta_l2 = QHBoxLayout()
+        e_meta = QLineEdit()
+        e_meta.setFixedWidth(50)
+        self.auto_meta_var = NumVar(e_meta, 5)
+        meta_l2.addWidget(e_meta)
+        meta_l2.addWidget(QLabel("% acima da ref."))
+        meta_l2.addStretch()
+        cfg_meta.addLayout(meta_l2)
+        config_l.addLayout(cfg_meta, 1)
 
         params_grid.addWidget(config_box, 2, 0, 1, 2)
 
@@ -3190,8 +3463,8 @@ Isso ajuda a detectar:
         selected_rebal = [period for period, var in self.rebalance_periods.items() if var.get()]
         selected_obj = [obj for obj, var in self.objectives.items() if var.get()]
 
-        obj_mapping = {'sharpe': 'sharpe', 'volatility': 'volatility',
-                       'hc10': 'hc10', 'quality_linear': 'quality_linear'}
+        obj_mapping = {'sharpe': 'sharpe', 'sortino': 'sortino', 'volatility': 'volatility',
+                       'hc10': 'hc10', 'quality_linear': 'quality_linear', 'excess_hc10': 'excess_hc10'}
 
         for otim_period in selected_otim:
             for rebal_period in selected_rebal:
@@ -3207,6 +3480,7 @@ Isso ajuda a detectar:
                         'use_shorts': self.use_auto_shorts.get(),
                         'short_asset': self.short_asset_var.get() if self.use_auto_shorts.get() else None,
                         'short_weight': self.short_weight_var.get() / 100 if self.use_auto_shorts.get() else 0,
+                        'target_return': (self.auto_meta_var.get() / 100) if self.use_auto_meta.get() else None,
                         'desc': f"{otim_period}_{rebal_period}_{obj_key}"
                     }
                     configs.append(config)
@@ -3460,9 +3734,11 @@ Isso ajuda a detectar:
                     risk_free_rate = 0.0
 
                 objective_map = {
-                    'sharpe': 'sharpe', 'volatility': 'volatility',
-                    'hc10': 'hc10', 'quality_linear': 'quality_linear'
+                    'sharpe': 'sharpe', 'sortino': 'sortino', 'volatility': 'volatility',
+                    'hc10': 'hc10', 'quality_linear': 'quality_linear', 'excess_hc10': 'excess_hc10'
                 }
+
+                target_return = config.get('target_return')
 
                 if config['use_shorts'] and config['short_asset']:
                     print(f"🔄 OTIMIZAÇÃO COM SHORTS")
@@ -3471,6 +3747,7 @@ Isso ajuda a detectar:
                         short_assets=[config['short_asset']],
                         short_weights={config['short_asset']: config['short_weight']},
                         objective_type=objective_map[config['objective']],
+                        target_return=target_return,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
@@ -3480,6 +3757,7 @@ Isso ajuda a detectar:
                     print(f"📊 OTIMIZAÇÃO NORMAL (SEM SHORTS)")
                     self.result = self.optimizer.optimize_portfolio(
                         objective_type=objective_map[config['objective']],
+                        target_return=target_return,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
@@ -3685,8 +3963,8 @@ Isso ajuda a detectar:
         results.sort(key=lambda x: x['metrics']['sharpe'], reverse=True)
 
         obj_names = {
-            'sharpe': 'Sharpe', 'volatility': 'MinRisco',
-            'hc10': 'Inc/[(1-R²)×Vol]', 'quality_linear': 'Qualidade'
+            'sharpe': 'Sharpe', 'sortino': 'Sortino', 'volatility': 'MinRisco',
+            'hc10': 'Inc/[(1-R²)×Vol]', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso'
         }
 
         for i, result in enumerate(results):
