@@ -3105,8 +3105,8 @@ Isso ajuda a detectar:
 
         left = QVBoxLayout()
         right = QVBoxLayout()
-        content_l.addLayout(left, 1)   # metade esquerda: parâmetros
-        content_l.addLayout(right, 1)  # metade direita: estimativa + resultados
+        content_l.addLayout(left, 45)   # 45% esquerda: parâmetros
+        content_l.addLayout(right, 55)  # 55% direita: estimativa + resultados
 
         # Grid de parâmetros (linhas 0/1 expandem; conteúdo ancorado no topo-esquerda)
         params_grid = QGridLayout()
@@ -3290,7 +3290,7 @@ Isso ajuda a detectar:
         res_l.addLayout(export_l)
 
         columns = ('Rank', 'Otim', 'Rebal/Aval', 'Obj', 'N_Ativos', 'Sharpe',
-                   'Ret%', 'TxRef%', 'Vol%', 'Pos%')
+                   'Ret%', 'TxRef%', 'Vol%', 'Pos>Ref%', 'Pos Abs%')
         self.auto_results_columns = columns
         self.auto_results_tree = QTableWidget(0, len(columns))
         self.auto_results_tree.setHorizontalHeaderLabels(columns)
@@ -4017,6 +4017,20 @@ Isso ajuda a detectar:
                 else:
                     positive_return_pct = 0
 
+                # % de períodos em que a carteira SUPEROU a referência (excesso diário > 0)
+                positive_vs_ref_pct = 0
+                rf_cum_series = getattr(optimizer_completo, 'risk_free_cumulative', None)
+                if len(portfolio_returns_pct_valid) > 0 and rf_cum_series is not None:
+                    rf_cum = np.asarray(rf_cum_series)
+                    if len(rf_cum) == len(cumulative_completo):
+                        rf_cum_valid_completo = np.concatenate(
+                            [[rf_cum[n_dias_otim - 1]], rf_cum[n_dias_otim:]])
+                        variac_rf_pu = (1 + rf_cum_valid_completo[1:]) / (1 + rf_cum_valid_completo[:-1])
+                        rf_returns_pct_valid = variac_rf_pu - 1
+                        if len(rf_returns_pct_valid) == len(portfolio_returns_pct_valid):
+                            positive_vs_ref_pct = float(
+                                np.mean(portfolio_returns_pct_valid > rf_returns_pct_valid))
+
                 print(f"\n✅ RESUMO OUT-OF-SAMPLE:")
                 print(f"   Retorno Total: {retorno_periodo_valid:.2%}")
                 print(f"   Sharpe: {sharpe_valid:.3f}")
@@ -4027,6 +4041,7 @@ Isso ajuda a detectar:
                     'annual_return': retorno_anual_valid,
                     'volatility': vol_valid,
                     'positive_return_pct': positive_return_pct,
+                    'positive_vs_ref_pct': positive_vs_ref_pct,
                     'total_return': retorno_periodo_valid,
                     'risk_free_annual': taxa_anual_valid,
                     'risk_free_period': taxa_periodo_valid,
@@ -4055,7 +4070,7 @@ Isso ajuda a detectar:
                                      retorno_total, dias_totais):
         avg_metrics = {}
 
-        for metric in ['n_assets', 'positive_return_pct']:
+        for metric in ['n_assets', 'positive_return_pct', 'positive_vs_ref_pct']:
             values = [step[metric] for step in step_metrics
                       if metric in step and step[metric] is not None]
             avg_metrics[metric] = sum(values) / len(values) if values else 0
@@ -4104,6 +4119,7 @@ Isso ajuda a detectar:
                 f"{metrics['annual_return']:.1%}",
                 f"{metrics.get('risk_free_annual', 0):.1%}",
                 f"{metrics['volatility']:.1%}",
+                f"{metrics.get('positive_vs_ref_pct', 0):.1%}",
                 f"{metrics['positive_return_pct']:.1%}"
             )
 
@@ -4139,7 +4155,7 @@ Isso ajuda a detectar:
             if filename:
                 columns = ['Rank', 'Otimização', 'Rebalanceamento', 'Objetivo',
                            'N_Ativos', 'Sharpe', 'Retorno(%)', 'Taxa_Ref(%)',
-                           'Volatilidade(%)', 'Positivos(%)']
+                           'Volatilidade(%)', 'Pos>Ref(%)', 'Pos_Abs(%)']
                 data = self._auto_results_rows()
                 df = pd.DataFrame(data, columns=columns)
                 df.to_csv(filename, index=False, encoding='utf-8-sig')
@@ -4163,7 +4179,7 @@ Isso ajuda a detectar:
             if filename:
                 columns = ['Rank', 'Otimização', 'Rebalanceamento', 'Objetivo',
                            'N_Ativos', 'Sharpe', 'Retorno(%)', 'Taxa_Ref(%)',
-                           'Volatilidade(%)', 'Positivos(%)']
+                           'Volatilidade(%)', 'Pos>Ref(%)', 'Pos_Abs(%)']
                 data = self._auto_results_rows()
                 df = pd.DataFrame(data, columns=columns)
 
