@@ -4017,20 +4017,6 @@ Isso ajuda a detectar:
                 else:
                     positive_return_pct = 0
 
-                # % de períodos em que a carteira SUPEROU a referência (excesso diário > 0)
-                positive_vs_ref_pct = 0
-                rf_cum_series = getattr(optimizer_completo, 'risk_free_cumulative', None)
-                if len(portfolio_returns_pct_valid) > 0 and rf_cum_series is not None:
-                    rf_cum = np.asarray(rf_cum_series)
-                    if len(rf_cum) == len(cumulative_completo):
-                        rf_cum_valid_completo = np.concatenate(
-                            [[rf_cum[n_dias_otim - 1]], rf_cum[n_dias_otim:]])
-                        variac_rf_pu = (1 + rf_cum_valid_completo[1:]) / (1 + rf_cum_valid_completo[:-1])
-                        rf_returns_pct_valid = variac_rf_pu - 1
-                        if len(rf_returns_pct_valid) == len(portfolio_returns_pct_valid):
-                            positive_vs_ref_pct = float(
-                                np.mean(portfolio_returns_pct_valid > rf_returns_pct_valid))
-
                 print(f"\n✅ RESUMO OUT-OF-SAMPLE:")
                 print(f"   Retorno Total: {retorno_periodo_valid:.2%}")
                 print(f"   Sharpe: {sharpe_valid:.3f}")
@@ -4041,7 +4027,6 @@ Isso ajuda a detectar:
                     'annual_return': retorno_anual_valid,
                     'volatility': vol_valid,
                     'positive_return_pct': positive_return_pct,
-                    'positive_vs_ref_pct': positive_vs_ref_pct,
                     'total_return': retorno_periodo_valid,
                     'risk_free_annual': taxa_anual_valid,
                     'risk_free_period': taxa_periodo_valid,
@@ -4070,10 +4055,22 @@ Isso ajuda a detectar:
                                      retorno_total, dias_totais):
         avg_metrics = {}
 
-        for metric in ['n_assets', 'positive_return_pct', 'positive_vs_ref_pct']:
-            values = [step[metric] for step in step_metrics
-                      if metric in step and step[metric] is not None]
-            avg_metrics[metric] = sum(values) / len(values) if values else 0
+        values = [step['n_assets'] for step in step_metrics
+                  if 'n_assets' in step and step['n_assets'] is not None]
+        avg_metrics['n_assets'] = sum(values) / len(values) if values else 0
+
+        # % de PERÍODOS (steps) com resultado positivo — não por dia, por rebalanceamento:
+        #  - Pos Abs : retorno do período > 0
+        #  - Pos>Ref : retorno do período > taxa de referência do período (excesso do período > 0)
+        n = len(step_metrics)
+        if n > 0:
+            avg_metrics['positive_return_pct'] = sum(
+                1 for s in step_metrics if s.get('total_return', 0) > 0) / n
+            avg_metrics['positive_vs_ref_pct'] = sum(
+                1 for s in step_metrics if s.get('total_return', 0) > s.get('risk_free_period', 0)) / n
+        else:
+            avg_metrics['positive_return_pct'] = 0
+            avg_metrics['positive_vs_ref_pct'] = 0
 
         avg_metrics['annual_return'] = retorno_anualizado
         avg_metrics['risk_free_annual'] = taxa_ref_anualizada

@@ -479,8 +479,8 @@ Ao concluir, a tabela exibe todas as configurações válidas ordenadas pelo Sha
 | Ret%       | Retorno anualizado acumulado de todos os steps.                                    |
 | TxRef%     | Taxa de referência anualizada acumulada.                                           |
 | Vol%       | Volatilidade média dos steps.                                                      |
-| Pos>Ref%   | Percentual médio de dias em que a carteira superou a referência (excesso diário > 0). |
-| Pos Abs%   | Percentual médio de dias com retorno positivo em termos absolutos (a carteira subiu). |
+| Pos>Ref%   | Percentual de períodos (steps de rebalanceamento) em que o retorno superou a taxa de referência do período. |
+| Pos Abs%   | Percentual de períodos (steps de rebalanceamento) com retorno positivo em termos absolutos. |
 
 ## 10.5 Exportação dos Resultados
 
