@@ -479,6 +479,7 @@ Ao concluir, a tabela exibe todas as configurações válidas ordenadas pelo Sha
 | Ret%       | Retorno anualizado acumulado de todos os steps.                                    |
 | TxRef%     | Taxa de referência anualizada acumulada.                                           |
 | Vol%       | Volatilidade média dos steps.                                                      |
+| VaR95%     | VaR 95% diário médio dos steps (perda esperada nos piores 5% dos dias). Risco de cauda. |
 | Pos>Ref%   | Percentual de períodos (steps de rebalanceamento) em que o retorno superou a taxa de referência do período. |
 | Pos Abs%   | Percentual de períodos (steps de rebalanceamento) com retorno positivo em termos absolutos. |
 

@@ -3290,11 +3290,13 @@ Isso ajuda a detectar:
         res_l.addLayout(export_l)
 
         columns = ('Rank', 'Otim', 'Rebal/Aval', 'Obj', 'N_Ativos', 'Sharpe',
-                   'Ret%', 'TxRef%', 'Vol%', 'Pos>Ref%', 'Pos Abs%')
+                   'Ret%', 'TxRef%', 'Vol%', 'VaR95%', 'Pos>Ref%', 'Pos Abs%')
         self.auto_results_columns = columns
         self.auto_results_tree = QTableWidget(0, len(columns))
         self.auto_results_tree.setHorizontalHeaderLabels(columns)
-        self.auto_results_tree.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        _auto_header = self.auto_results_tree.horizontalHeader()
+        _auto_header.setSectionResizeMode(QHeaderView.ResizeToContents)  # colunas ajustam ao conteúdo
+        _auto_header.setStretchLastSection(True)                          # última preenche o espaço restante
         self.auto_results_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
         res_l.addWidget(self.auto_results_tree, 1)
 
@@ -4059,6 +4061,11 @@ Isso ajuda a detectar:
                   if 'n_assets' in step and step['n_assets'] is not None]
         avg_metrics['n_assets'] = sum(values) / len(values) if values else 0
 
+        # VaR 95% diário médio dos steps (risco de cauda)
+        var_values = [step['var_95'] for step in step_metrics
+                      if step.get('var_95') is not None]
+        avg_metrics['var_95'] = sum(var_values) / len(var_values) if var_values else 0
+
         # % de PERÍODOS (steps) com resultado positivo — não por dia, por rebalanceamento:
         #  - Pos Abs : retorno do período > 0
         #  - Pos>Ref : retorno do período > taxa de referência do período (excesso do período > 0)
@@ -4116,6 +4123,7 @@ Isso ajuda a detectar:
                 f"{metrics['annual_return']:.1%}",
                 f"{metrics.get('risk_free_annual', 0):.1%}",
                 f"{metrics['volatility']:.1%}",
+                f"{metrics.get('var_95', 0):.2%}",
                 f"{metrics.get('positive_vs_ref_pct', 0):.1%}",
                 f"{metrics['positive_return_pct']:.1%}"
             )
@@ -4152,7 +4160,7 @@ Isso ajuda a detectar:
             if filename:
                 columns = ['Rank', 'Otimização', 'Rebalanceamento', 'Objetivo',
                            'N_Ativos', 'Sharpe', 'Retorno(%)', 'Taxa_Ref(%)',
-                           'Volatilidade(%)', 'Pos>Ref(%)', 'Pos_Abs(%)']
+                           'Volatilidade(%)', 'VaR95%(diário)', 'Pos>Ref(%)', 'Pos_Abs(%)']
                 data = self._auto_results_rows()
                 df = pd.DataFrame(data, columns=columns)
                 df.to_csv(filename, index=False, encoding='utf-8-sig')
@@ -4176,7 +4184,7 @@ Isso ajuda a detectar:
             if filename:
                 columns = ['Rank', 'Otimização', 'Rebalanceamento', 'Objetivo',
                            'N_Ativos', 'Sharpe', 'Retorno(%)', 'Taxa_Ref(%)',
-                           'Volatilidade(%)', 'Pos>Ref(%)', 'Pos_Abs(%)']
+                           'Volatilidade(%)', 'VaR95%(diário)', 'Pos>Ref(%)', 'Pos_Abs(%)']
                 data = self._auto_results_rows()
                 df = pd.DataFrame(data, columns=columns)
 
