@@ -68,6 +68,44 @@ class PortfolioOptimizer:
         if self.risk_free_rate_total > 0:
             print(f"Taxa livre de risco detectada: {self.risk_free_rate_total:.2%}")
     
+    def _core_metrics(self, weights, risk_free_rate=0.0):
+	    """
+	    Versão ENXUTA das métricas, usada APENAS dentro do loop de otimização
+	    para os objetivos simples (Sharpe / Sortino / Volatilidade / Retorno).
+
+	    Calcula só retorno, volatilidade e downside — evitando VaR, CVaR, duas
+	    regressões lineares e as métricas de excesso a cada uma das centenas de
+	    avaliações por iteração do SLSQP (com 133 ativos isso pesa muito).
+
+	    As métricas COMPLETAS (VaR, HC10, etc.) continuam sendo recalculadas uma
+	    única vez ao final, sobre os pesos ótimos, via calculate_portfolio_metrics
+	    — então a tabela de resultados não é afetada. Os valores aqui são
+	    idênticos aos de calculate_portfolio_metrics para estas mesmas métricas.
+	    """
+	    weights = np.array(weights)
+	    portfolio_returns_daily = np.dot(self.returns_data.values, weights)
+	    portfolio_cumulative = np.cumsum(portfolio_returns_daily)
+	    cum_with_zero = np.concatenate([[0], portfolio_cumulative])
+	    returns_pct = (1 + cum_with_zero[1:]) / (1 + cum_with_zero[:-1]) - 1
+
+	    vol = np.std(returns_pct, ddof=0) * np.sqrt(252)
+	    gv_final = portfolio_cumulative[-1]
+	    excess_return = gv_final - risk_free_rate
+
+	    downside_returns = np.minimum(returns_pct, 0.0)
+	    downside_dev = np.sqrt(np.mean(downside_returns ** 2)) * np.sqrt(252)
+
+	    annual_return = (1 + gv_final) ** (252 / self.n_periods) - 1
+
+	    return {
+		    'volatility': vol,
+		    'gv_final': gv_final,
+		    'excess_return': excess_return,
+		    'annual_return': annual_return,
+		    'sharpe_ratio': excess_return / vol if vol > 0 else 0,
+		    'sortino_ratio': excess_return / downside_dev if downside_dev > 0 else 0,
+	    }
+
     def calculate_portfolio_metrics(self, weights, risk_free_rate=0.0):
 	    """
 	    Calcula métricas do portfólio (EXATAMENTE como na planilha)
@@ -107,17 +145,15 @@ class PortfolioOptimizer:
 	    sharpe_ratio = excess_return / portfolio_vol if portfolio_vol > 0 else 0
 	    
 	    # NOVO: Sortino Ratio
-	    # Downside Deviation = volatilidade apenas dos retornos negativos
-	    # Usar 0 como threshold (definição clássica)
-	    negative_returns = portfolio_returns_pct[portfolio_returns_pct < 0]
-	    
-	    if len(negative_returns) > 0:
-		    # Desvio padrão dos retornos negativos, anualizado
-		    downside_deviation = np.std(negative_returns, ddof=0) * np.sqrt(252)
-	    else:
-		    # Se não há retornos negativos
-		    downside_deviation = 0
-	    
+	    # Downside Deviation = semi-desvio-padrão clássico de Sortino & Price:
+	    #   sqrt( média( min(retorno, 0)² ) ), sobre TODOS os períodos, anualizado.
+	    # Esta forma é SUAVE (diferenciável): min(r,0)² não tem "quinas" no
+	    # threshold zero, ao contrário do desvio-padrão sobre o subconjunto de
+	    # negativos (cuja contagem mudava descontinuamente a cada passo do
+	    # solver, deixando o SLSQP lento/travado na otimização por Sortino).
+	    downside_returns = np.minimum(portfolio_returns_pct, 0.0)
+	    downside_deviation = np.sqrt(np.mean(downside_returns ** 2)) * np.sqrt(252)
+
 	    # Sortino Ratio
 	    # Usa o excesso de retorno sobre a taxa livre dividido pelo downside deviation
 	    sortino_ratio = excess_return / downside_deviation if downside_deviation > 0 else 0
@@ -325,8 +361,21 @@ class PortfolioOptimizer:
         """
         
         def objective_function(weights):
+            # Caminho ENXUTO para objetivos simples: calcula só o necessário,
+            # sem VaR/CVaR/regressões. Acelera muito com muitos ativos.
+            if objective_type in ('sharpe', 'sortino', 'volatility', 'return'):
+                core = self._core_metrics(weights, risk_free_rate)
+                if objective_type == 'sharpe':
+                    return -core['sharpe_ratio']
+                elif objective_type == 'sortino':
+                    return -core['sortino_ratio']
+                elif objective_type == 'volatility':
+                    return core['volatility']
+                else:  # 'return'
+                    return -core['annual_return']
+
             metrics = self.calculate_portfolio_metrics(weights, risk_free_rate)
-            
+
             if objective_type == 'sharpe':
                 # Maximizar Sharpe (minimizar -Sharpe)
                 return -metrics['sharpe_ratio']
@@ -416,7 +465,7 @@ class PortfolioOptimizer:
         if meta_used:
             constraints.append({
                 'type': 'ineq',
-                'fun': lambda w: self.calculate_portfolio_metrics(w, risk_free_rate)['gv_final'] - meta_required
+                'fun': lambda w: self._core_metrics(w, risk_free_rate)['gv_final'] - meta_required
             })
         
         # Limites para cada peso
@@ -456,7 +505,7 @@ class PortfolioOptimizer:
                     base_constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1}]
 
                     def _return_obj(w):
-                        return -self.calculate_portfolio_metrics(w, risk_free_rate)['annual_return']
+                        return -self._core_metrics(w, risk_free_rate)['annual_return']
 
                     result = self._solve_multistart(_return_obj, bounds, base_constraints, initial_weights)
 
@@ -518,8 +567,21 @@ class PortfolioOptimizer:
 
         def objective_function(weights_to_optimize):
             full_weights = _full_weights(weights_to_optimize)
+
+            # Caminho ENXUTO para objetivos simples (ver optimize_portfolio)
+            if objective_type in ('sharpe', 'sortino', 'volatility', 'return'):
+                core = self._core_metrics(full_weights, risk_free_rate)
+                if objective_type == 'sharpe':
+                    return -core['sharpe_ratio']
+                elif objective_type == 'sortino':
+                    return -core['sortino_ratio']
+                elif objective_type == 'volatility':
+                    return core['volatility']
+                else:  # 'return'
+                    return -core['annual_return']
+
             metrics = self.calculate_portfolio_metrics(full_weights, risk_free_rate)
-            
+
             if objective_type == 'sharpe':
                 return -metrics['sharpe_ratio']
             elif objective_type == 'sortino':
@@ -575,7 +637,7 @@ class PortfolioOptimizer:
         if meta_used:
             constraints.append({
                 'type': 'ineq',
-                'fun': lambda w: self.calculate_portfolio_metrics(_full_weights(w), risk_free_rate)['gv_final'] - meta_required
+                'fun': lambda w: self._core_metrics(_full_weights(w), risk_free_rate)['gv_final'] - meta_required
             })
 
         # Limites para pesos long
@@ -615,7 +677,7 @@ class PortfolioOptimizer:
                     base_constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1}]
 
                     def _return_obj(w):
-                        return -self.calculate_portfolio_metrics(_full_weights(w), risk_free_rate)['annual_return']
+                        return -self._core_metrics(_full_weights(w), risk_free_rate)['annual_return']
 
                     result = self._solve_multistart(_return_obj, bounds, base_constraints, initial_weights)
 
