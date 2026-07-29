@@ -565,6 +565,20 @@ class _AutoSignals(QObject):
     finished = pyqtSignal()
 
 
+class _SortableItem(QTableWidgetItem):
+    """Item de tabela que ordena numericamente quando há uma chave numérica
+    armazenada em Qt.UserRole; caso contrário, ordena como texto."""
+    def __lt__(self, other):
+        a = self.data(Qt.UserRole)
+        b = other.data(Qt.UserRole)
+        if a is not None and b is not None:
+            try:
+                return float(a) < float(b)
+            except (TypeError, ValueError):
+                pass
+        return self.text() < other.text()
+
+
 # =============================================================================
 # JANELA PRINCIPAL
 # =============================================================================
@@ -3296,8 +3310,8 @@ Isso ajuda a detectar:
         self.auto_results_tree.setHorizontalHeaderLabels(columns)
         _auto_header = self.auto_results_tree.horizontalHeader()
         _auto_header.setSectionResizeMode(QHeaderView.ResizeToContents)  # colunas ajustam ao conteúdo
-        _auto_header.setStretchLastSection(True)                          # última preenche o espaço restante
         self.auto_results_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.auto_results_tree.setSortingEnabled(True)                   # ordenável ao clicar no cabeçalho
         res_l.addWidget(self.auto_results_tree, 1)
 
         right.addWidget(results_box, 1)
@@ -4100,6 +4114,8 @@ Isso ajuda a detectar:
         return result
 
     def process_and_display_results(self, results):
+        # Desabilita ordenação durante a inserção para evitar reordenação a cada linha
+        self.auto_results_tree.setSortingEnabled(False)
         self.auto_results_tree.setRowCount(0)
 
         results.sort(key=lambda x: x['metrics']['sharpe'], reverse=True)
@@ -4113,27 +4129,34 @@ Isso ajuda a detectar:
             config = result['config']
             metrics = result['metrics']
 
-            values = (
-                str(i + 1),
-                config['otim_period'],
-                config['rebal_period'],
-                obj_names.get(config['objective'], config['objective']),
-                str(int(metrics['n_assets'])),
-                f"{metrics['sharpe']:.3f}",
-                f"{metrics['annual_return']:.1%}",
-                f"{metrics.get('risk_free_annual', 0):.1%}",
-                f"{metrics['volatility']:.1%}",
-                f"{metrics.get('var_95', 0):.2%}",
-                f"{metrics.get('positive_vs_ref_pct', 0):.1%}",
-                f"{metrics['positive_return_pct']:.1%}"
+            # (texto exibido, chave numérica para ordenação — None = ordena como texto)
+            cells = (
+                (str(i + 1), i + 1),
+                (config['otim_period'], None),
+                (config['rebal_period'], None),
+                (obj_names.get(config['objective'], config['objective']), None),
+                (str(int(metrics['n_assets'])), metrics['n_assets']),
+                (f"{metrics['sharpe']:.3f}", metrics['sharpe']),
+                (f"{metrics['annual_return']:.1%}", metrics['annual_return']),
+                (f"{metrics.get('risk_free_annual', 0):.1%}", metrics.get('risk_free_annual', 0)),
+                (f"{metrics['volatility']:.1%}", metrics['volatility']),
+                (f"{metrics.get('var_95', 0):.2%}", metrics.get('var_95', 0)),
+                (f"{metrics.get('positive_vs_ref_pct', 0):.1%}", metrics.get('positive_vs_ref_pct', 0)),
+                (f"{metrics['positive_return_pct']:.1%}", metrics['positive_return_pct']),
             )
 
             r = self.auto_results_tree.rowCount()
             self.auto_results_tree.insertRow(r)
-            for c, val in enumerate(values):
-                item = QTableWidgetItem(str(val))
+            for c, (text, key) in enumerate(cells):
+                item = _SortableItem(str(text))
                 item.setTextAlignment(Qt.AlignCenter)
+                if key is not None:
+                    item.setData(Qt.UserRole, float(key))
                 self.auto_results_tree.setItem(r, c, item)
+
+        # Reabilita ordenação; começa ordenado por Rank (coluna 0, ascendente)
+        self.auto_results_tree.setSortingEnabled(True)
+        self.auto_results_tree.sortItems(0, Qt.AscendingOrder)
 
     def _auto_results_rows(self):
         rows = []
