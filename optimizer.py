@@ -96,10 +96,11 @@ class PortfolioOptimizer:
 	    downside_dev = np.sqrt(np.mean(downside_returns ** 2)) * np.sqrt(252)
 
 	    # Total Under Water: soma de todos os retornos diários negativos (<= 0).
-	    # abs_under_water é o total de perdas do período (>= 0). É uma SOMA (L1),
-	    # bem mais estável que o downside deviation (RMS) — não encolhe perto de
-	    # zero com dados reais, então a razão Sharpe/Under Water fica bem
-	    # condicionada para o otimizador (ao contrário do Sortino).
+	    # abs_under_water é o total de perdas do período (>= 0). Sendo uma SOMA
+	    # (L1) sobre TODOS os dias negativos, usa muito mais observações que uma
+	    # medida de cauda (ex.: CVaR 95%, que olha só os 5% piores) e não exige
+	    # ordenar/selecionar subconjunto — por isso é estável e bem condicionada
+	    # como objetivo. É assimétrica: pune apenas perda, nunca oscilação p/ cima.
 	    total_under_water = np.sum(downside_returns)
 	    abs_under_water = abs(total_under_water)
 
@@ -115,7 +116,6 @@ class PortfolioOptimizer:
 		    'sortino_ratio': excess_return / downside_dev if downside_dev > 0 else 0,
 		    'total_under_water': total_under_water,
 		    'abs_under_water': abs_under_water,
-		    'sharpe_uw': sharpe_ratio / abs_under_water if abs_under_water > 1e-9 else sharpe_ratio / 1e-9,
 	    }
 
     def calculate_portfolio_metrics(self, weights, risk_free_rate=0.0):
@@ -170,14 +170,14 @@ class PortfolioOptimizer:
 	    # Usa o excesso de retorno sobre a taxa livre dividido pelo downside deviation
 	    sortino_ratio = excess_return / downside_deviation if downside_deviation > 0 else 0
 
-	    # NOVO: Total Under Water e o índice proprietário Sharpe/Under Water.
-	    # Total Under Water = soma de todos os retornos diários negativos (<= 0);
-	    # abs_under_water = total de perdas do período (>= 0). Sendo uma SOMA (L1),
-	    # é bem mais estável que o downside deviation (RMS): não encolhe perto de
-	    # zero, então a razão Sharpe/Under Water fica bem condicionada no otimizador.
+	    # NOVO: Total Under Water — soma de todos os retornos diários negativos (<= 0).
+	    # abs_under_water = total de perdas acumuladas do período (>= 0). É a medida
+	    # de risco ASSIMÉTRICA do otimizador: pune apenas perda, nunca oscilação
+	    # para cima (ao contrário da volatilidade). Como soma sobre todos os dias
+	    # negativos, usa muito mais observações que medidas de cauda (CVaR) e não
+	    # depende de ordenar/selecionar subconjunto.
 	    total_under_water = np.sum(downside_returns)
 	    abs_under_water = abs(total_under_water)
-	    sharpe_uw = sharpe_ratio / abs_under_water if abs_under_water > 1e-9 else sharpe_ratio / 1e-9
 	    
 	    # Retorno anualizado (para comparação)
 	    annual_return = (1 + gv_final) ** (252 / self.n_periods) - 1
@@ -278,7 +278,6 @@ class PortfolioOptimizer:
 		    'downside_deviation': downside_deviation,  # NOVO
 		    'total_under_water': total_under_water,  # NOVO: soma dos retornos negativos
 		    'abs_under_water': abs_under_water,  # NOVO: total de perdas (>= 0)
-		    'sharpe_uw': sharpe_uw,  # NOVO: índice Sharpe / Under Water
 		    'excess_return': excess_return,
 		    'risk_free_rate': risk_free_rate,
 		    'hc10': hc10,
@@ -433,15 +432,17 @@ class PortfolioOptimizer:
         def objective_function(weights):
             # Caminho ENXUTO para objetivos simples: calcula só o necessário,
             # sem VaR/CVaR/regressões. Acelera muito com muitos ativos.
-            if objective_type in ('sharpe', 'sortino', 'sharpe_uw', 'volatility', 'return'):
+            if objective_type in ('sharpe', 'sortino', 'under_water', 'volatility', 'return'):
                 core = self._core_metrics(weights, risk_free_rate)
                 if objective_type == 'sharpe':
                     return -core['sharpe_ratio']
                 elif objective_type == 'sortino':
                     return -core['sortino_ratio']
-                elif objective_type == 'sharpe_uw':
-                    # NOVO: Maximizar Sharpe / Under Water
-                    return -core['sharpe_uw']
+                elif objective_type == 'under_water':
+                    # NOVO: Minimizar Under Water (total de perdas do período).
+                    # Risco assimétrico — combina bem com a Meta de retorno:
+                    # "menor perda entre as carteiras que atingem o alvo".
+                    return core['abs_under_water']
                 elif objective_type == 'volatility':
                     return core['volatility']
                 else:  # 'return'
@@ -669,14 +670,14 @@ class PortfolioOptimizer:
             full_weights = _full_weights(weights_to_optimize)
 
             # Caminho ENXUTO para objetivos simples (ver optimize_portfolio)
-            if objective_type in ('sharpe', 'sortino', 'sharpe_uw', 'volatility', 'return'):
+            if objective_type in ('sharpe', 'sortino', 'under_water', 'volatility', 'return'):
                 core = self._core_metrics(full_weights, risk_free_rate)
                 if objective_type == 'sharpe':
                     return -core['sharpe_ratio']
                 elif objective_type == 'sortino':
                     return -core['sortino_ratio']
-                elif objective_type == 'sharpe_uw':
-                    return -core['sharpe_uw']
+                elif objective_type == 'under_water':
+                    return core['abs_under_water']
                 elif objective_type == 'volatility':
                     return core['volatility']
                 else:  # 'return'
