@@ -2567,7 +2567,16 @@ class PortfolioOptimizerGUI(QMainWindow):
                     self.export_csv_btn.setEnabled(True)
                 if self.export_excel_btn is not None:
                     self.export_excel_btn.setEnabled(True)
-                messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!" + self._meta_message())
+                if self.result.get('degraded'):
+                    # Degradação graciosa: houve resultado, mas com ressalvas
+                    messagebox.showwarning(
+                        "Otimização concluída com ressalvas",
+                        "⚠️ Otimização concluída, mas SEM convergência plena.\n\n"
+                        f"{self.result['degraded_message']}"
+                        + self._meta_message()
+                    )
+                else:
+                    messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!" + self._meta_message())
                 self.notebook.setCurrentWidget(self.tab_results)
             else:
                 messagebox.showerror("Erro", f"❌ {self.result['message']}")
@@ -3912,6 +3921,10 @@ Isso ajuda a detectar:
                 if not self.result['success']:
                     print(f"❌ Otimização falhou: {self.result.get('message', 'Erro desconhecido')}")
                     return None
+
+                if self.result.get('degraded'):
+                    # Degradação graciosa: o step segue, mas fica registrado no log
+                    print(f"⚠️ ATENÇÃO: {self.result['degraded_message']}")
 
                 optimized_weights = self.result['weights']
                 optimized_assets = self.result['assets']

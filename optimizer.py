@@ -376,6 +376,52 @@ class PortfolioOptimizer:
 
         return result
 
+    def _viable_weights(self, weights, bounds, bound_tol=1e-3, sum_tol=0.10):
+        """
+        Verifica se um vetor de pesos é VIÁVEL (respeita os limites e soma 100%)
+        e devolve uma versão limpa dele, ou None se não for aproveitável.
+
+        Usado na "degradação graciosa": quando o SLSQP não converge formalmente
+        (success=False) ele muitas vezes já está sobre uma carteira perfeitamente
+        utilizável. É melhor entregar essa carteira, avisando, do que abortar
+        com "Otimização falhou" e não mostrar resultado nenhum.
+
+        Os dois tipos de violação são tratados de forma diferente:
+        - LIMITES (min/max por ativo): tolerância apertada. Só absorve o resíduo
+          numérico do próprio SLSQP (que já faz "clipping to bounds").
+        - SOMA = 100%: tolerância folgada, porque essa violação é corrigível de
+          forma exata por renormalização (dividir pelo total preserva as
+          proporções). Ainda assim, os limites são reconferidos DEPOIS de
+          renormalizar; se a renormalização estourar algum teto, a carteira é
+          rejeitada.
+        """
+        if weights is None:
+            return None
+        w = np.asarray(weights, dtype=float)
+        if w.shape != (len(bounds),) or not np.all(np.isfinite(w)):
+            return None
+
+        lows = np.array([b[0] for b in bounds], dtype=float)
+        highs = np.array([b[1] for b in bounds], dtype=float)
+
+        if np.any(w < lows - bound_tol) or np.any(w > highs + bound_tol):
+            return None
+
+        w = np.clip(w, lows, highs)
+
+        # Soma longe demais de 100% indica que o solver nem chegou perto da
+        # região viável — aí não há o que salvar.
+        total = w.sum()
+        if not np.isfinite(total) or total <= 0 or abs(total - 1.0) > sum_tol:
+            return None
+        w = w / total
+
+        # Reconferir limites após a renormalização.
+        if np.any(w < lows - bound_tol) or np.any(w > highs + bound_tol):
+            return None
+
+        return np.clip(w, lows, highs)
+
     def optimize_portfolio(self, objective_type='sharpe', target_return=None, max_weight=1.0, min_weight=0.0,
                           risk_free_rate=0.0, individual_constraints=None):
         """
@@ -536,29 +582,56 @@ class PortfolioOptimizer:
 
                     result = self._solve_multistart(_return_obj, bounds, base_constraints, initial_weights)
 
+            # DEGRADAÇÃO GRACIOSA: se o solver não convergiu formalmente, mas os
+            # pesos em mãos formam uma carteira viável, entrega essa carteira com
+            # um aviso — melhor que abortar sem mostrar resultado algum.
+            avisos = []
             if result.success:
                 optimal_weights = result.x
-                metrics = self.calculate_portfolio_metrics(optimal_weights, risk_free_rate)
-
-                out = {
-                    'success': True,
-                    'weights': optimal_weights,
-                    'metrics': metrics,
-                    'assets': self.assets
-                }
-                if meta_used:
-                    out['meta_used'] = True
-                    out['meta_target'] = target_return
-                    out['meta_required'] = meta_required
-                    out['meta_achieved'] = metrics['gv_final']
-                    out['meta_ref'] = risk_free_rate
-                    out['meta_atingida'] = metrics['gv_final'] >= meta_required - 1e-6
-                return out
             else:
-                return {
-                    'success': False,
-                    'message': f"Otimização falhou: {result.message}"
-                }
+                optimal_weights = self._viable_weights(getattr(result, 'x', None), bounds)
+                if optimal_weights is None:
+                    return {
+                        'success': False,
+                        'message': f"Otimização falhou: {result.message}"
+                    }
+                avisos.append(
+                    f"O solver não convergiu totalmente ({result.message}). "
+                    "A melhor carteira viável encontrada foi mantida — "
+                    "confira os resultados antes de usar."
+                )
+
+            # Aviso adicional: objetivo ainda na região de penalidade significa que
+            # o critério escolhido não pôde ser avaliado (ex.: inclinação negativa).
+            try:
+                if objective_function(optimal_weights) >= 1e9:
+                    avisos.append(
+                        "O objetivo escolhido não pôde ser satisfeito nesta janela "
+                        "(critério em região inválida); a carteira devolvida pode "
+                        "estar próxima do ponto de partida."
+                    )
+            except Exception:
+                pass
+
+            metrics = self.calculate_portfolio_metrics(optimal_weights, risk_free_rate)
+
+            out = {
+                'success': True,
+                'weights': optimal_weights,
+                'metrics': metrics,
+                'assets': self.assets
+            }
+            if avisos:
+                out['degraded'] = True
+                out['degraded_message'] = " ".join(avisos)
+            if meta_used:
+                out['meta_used'] = True
+                out['meta_target'] = target_return
+                out['meta_required'] = meta_required
+                out['meta_achieved'] = metrics['gv_final']
+                out['meta_ref'] = risk_free_rate
+                out['meta_atingida'] = metrics['gv_final'] >= meta_required - 1e-6
+            return out
 
         except Exception as e:
             return {
@@ -710,29 +783,53 @@ class PortfolioOptimizer:
 
                     result = self._solve_multistart(_return_obj, bounds, base_constraints, initial_weights)
 
+            # DEGRADAÇÃO GRACIOSA (ver optimize_portfolio)
+            avisos = []
             if result.success:
-                full_weights = _full_weights(result.x)
-                metrics = self.calculate_portfolio_metrics(full_weights, risk_free_rate)
-
-                out = {
-                    'success': True,
-                    'weights': full_weights,
-                    'metrics': metrics,
-                    'assets': self.assets
-                }
-                if meta_used:
-                    out['meta_used'] = True
-                    out['meta_target'] = target_return
-                    out['meta_required'] = meta_required
-                    out['meta_achieved'] = metrics['gv_final']
-                    out['meta_ref'] = risk_free_rate
-                    out['meta_atingida'] = metrics['gv_final'] >= meta_required - 1e-6
-                return out
+                optimized_weights = result.x
             else:
-                return {
-                    'success': False,
-                    'message': f"Otimização falhou: {result.message}"
-                }
+                optimized_weights = self._viable_weights(getattr(result, 'x', None), bounds)
+                if optimized_weights is None:
+                    return {
+                        'success': False,
+                        'message': f"Otimização falhou: {result.message}"
+                    }
+                avisos.append(
+                    f"O solver não convergiu totalmente ({result.message}). "
+                    "A melhor carteira viável encontrada foi mantida — "
+                    "confira os resultados antes de usar."
+                )
+
+            try:
+                if objective_function(optimized_weights) >= 1e9:
+                    avisos.append(
+                        "O objetivo escolhido não pôde ser satisfeito nesta janela "
+                        "(critério em região inválida); a carteira devolvida pode "
+                        "estar próxima do ponto de partida."
+                    )
+            except Exception:
+                pass
+
+            full_weights = _full_weights(optimized_weights)
+            metrics = self.calculate_portfolio_metrics(full_weights, risk_free_rate)
+
+            out = {
+                'success': True,
+                'weights': full_weights,
+                'metrics': metrics,
+                'assets': self.assets
+            }
+            if avisos:
+                out['degraded'] = True
+                out['degraded_message'] = " ".join(avisos)
+            if meta_used:
+                out['meta_used'] = True
+                out['meta_target'] = target_return
+                out['meta_required'] = meta_required
+                out['meta_achieved'] = metrics['gv_final']
+                out['meta_ref'] = risk_free_rate
+                out['meta_atingida'] = metrics['gv_final'] >= meta_required - 1e-6
+            return out
 
         except Exception as e:
             return {
