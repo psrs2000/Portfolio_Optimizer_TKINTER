@@ -1117,6 +1117,7 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.base_objectives = [
             "Maximizar Sharpe Ratio",
             "Maximizar Sortino Ratio",
+            "Maximizar Sharpe / Under Water",
             "Minimizar Risco",
             "Maximizar Inclinação",
             "Maximizar Inclinação/[(1-R²)×Vol]",
@@ -2511,6 +2512,7 @@ class PortfolioOptimizerGUI(QMainWindow):
             objective_map = {
                 "Maximizar Sharpe Ratio": 'sharpe',
                 "Maximizar Sortino Ratio": 'sortino',
+                "Maximizar Sharpe / Under Water": 'sharpe_uw',
                 "Minimizar Risco": 'volatility',
                 "Maximizar Inclinação": 'slope',
                 "Maximizar Inclinação/[(1-R²)×Vol]": 'hc10',
@@ -3174,10 +3176,12 @@ Isso ajuda a detectar:
         obj_l = QVBoxLayout(obj_box)
         self.objectives = {}
         obj_labels = {'sharpe': 'Maximizar Sharpe', 'sortino': 'Maximizar Sortino',
+                      'sharpe_uw': 'Maximizar Sharpe / Under Water',
                       'volatility': 'Minimizar Risco', 'hc10': 'Maximizar Inc/[(1-R²)×Vol]',
                       'quality_linear': 'Qualidade da Linearidade',
                       'excess_hc10': 'Linearidade do Excesso'}
-        for key, default in [('sharpe', True), ('sortino', False), ('volatility', False),
+        for key, default in [('sharpe', True), ('sortino', False), ('sharpe_uw', False),
+                             ('volatility', False),
                              ('hc10', False), ('quality_linear', False), ('excess_hc10', False)]:
             cb = QCheckBox(obj_labels[key])
             cb.setChecked(default)
@@ -3598,7 +3602,8 @@ Isso ajuda a detectar:
         selected_rebal = [period for period, var in self.rebalance_periods.items() if var.get()]
         selected_obj = [obj for obj, var in self.objectives.items() if var.get()]
 
-        obj_mapping = {'sharpe': 'sharpe', 'sortino': 'sortino', 'volatility': 'volatility',
+        obj_mapping = {'sharpe': 'sharpe', 'sortino': 'sortino', 'sharpe_uw': 'sharpe_uw',
+                       'volatility': 'volatility',
                        'hc10': 'hc10', 'quality_linear': 'quality_linear', 'excess_hc10': 'excess_hc10'}
 
         for otim_period in selected_otim:
@@ -3873,7 +3878,8 @@ Isso ajuda a detectar:
                     risk_free_rate = 0.0
 
                 objective_map = {
-                    'sharpe': 'sharpe', 'sortino': 'sortino', 'volatility': 'volatility',
+                    'sharpe': 'sharpe', 'sortino': 'sortino', 'sharpe_uw': 'sharpe_uw',
+                    'volatility': 'volatility',
                     'hc10': 'hc10', 'quality_linear': 'quality_linear', 'excess_hc10': 'excess_hc10'
                 }
 
@@ -4121,7 +4127,7 @@ Isso ajuda a detectar:
         results.sort(key=lambda x: x['metrics']['sharpe'], reverse=True)
 
         obj_names = {
-            'sharpe': 'Sharpe', 'sortino': 'Sortino', 'volatility': 'MinRisco',
+            'sharpe': 'Sharpe', 'sortino': 'Sortino', 'sharpe_uw': 'Sharpe/UW', 'volatility': 'MinRisco',
             'hc10': 'Inc/[(1-R²)×Vol]', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso'
         }
 
