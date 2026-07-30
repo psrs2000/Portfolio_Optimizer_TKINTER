@@ -523,6 +523,27 @@ class PortfolioOptimizer:
                             return 1e10
                 else:
                     return 1e10
+
+            elif objective_type == 'excess_sharpe':
+                # NOVO: Maximizar Sharpe do EXCESSO — é a Linearidade do Excesso
+                # SEM o fator (1-R²): maximiza inclinação_excesso / vol_excesso.
+                # Para estabilidade, minimizamos o inverso: vol_excesso / inclinação.
+                if not hasattr(self, 'risk_free_cumulative') or self.risk_free_cumulative is None:
+                    return 1e10
+                if metrics.get('excess_slope') is not None:
+                    excess_returns_daily = metrics['portfolio_returns_daily'] - self.risk_free_returns.values
+                    excess_vol = np.std(excess_returns_daily, ddof=0) * np.sqrt(252)
+                    if metrics['excess_slope'] > 0.000001 and excess_vol > 0:
+                        return excess_vol / metrics['excess_slope']
+                    else:
+                        # Penalizar inclinação do excesso negativa/nula (mesma
+                        # lógica do excess_hc10)
+                        if metrics['excess_slope'] <= 0:
+                            return 1e10 + abs(metrics['excess_slope']) * 1e6
+                        else:
+                            return 1e10
+                else:
+                    return 1e10
             elif objective_type == 'return':
                 # Maximizar retorno (minimizar -retorno)
                 return -metrics['annual_return']
@@ -719,6 +740,23 @@ class PortfolioOptimizer:
                     excess_vol = np.std(excess_returns_daily, ddof=0) * np.sqrt(252)
                     if metrics['excess_slope'] > 0.000001 and excess_vol > 0 and metrics['excess_r_squared'] < 1:
                         return (1 - metrics['excess_r_squared']) * excess_vol / metrics['excess_slope']
+                    else:
+                        if metrics['excess_slope'] <= 0:
+                            return 1e10 + abs(metrics['excess_slope']) * 1e6
+                        else:
+                            return 1e10
+                else:
+                    return 1e10
+
+            elif objective_type == 'excess_sharpe':
+                # NOVO: Sharpe do Excesso (ver optimize_portfolio)
+                if not hasattr(self, 'risk_free_cumulative') or self.risk_free_cumulative is None:
+                    return 1e10
+                if metrics.get('excess_slope') is not None:
+                    excess_returns_daily = metrics['portfolio_returns_daily'] - self.risk_free_returns.values
+                    excess_vol = np.std(excess_returns_daily, ddof=0) * np.sqrt(252)
+                    if metrics['excess_slope'] > 0.000001 and excess_vol > 0:
+                        return excess_vol / metrics['excess_slope']
                     else:
                         if metrics['excess_slope'] <= 0:
                             return 1e10 + abs(metrics['excess_slope']) * 1e6

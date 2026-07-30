@@ -1119,11 +1119,13 @@ class PortfolioOptimizerGUI(QMainWindow):
             "Maximizar Sortino Ratio",
             "Minimizar Risco",
             "Minimizar Under Water",
-            "Maximizar Inclinação",
             "Maximizar Inclinação/[(1-R²)×Vol]",
             "Maximizar Qualidade da Linearidade"
         ]
-        self.risk_free_objectives = ["Maximizar Linearidade do Excesso"]
+        self.risk_free_objectives = [
+            "Maximizar Linearidade do Excesso",
+            "Maximizar Sharpe do Excesso"
+        ]
 
         self.objective_buttons = {}
         for obj in self.base_objectives:
@@ -1862,7 +1864,7 @@ class PortfolioOptimizerGUI(QMainWindow):
             {'Métrica': 'Taxa de Referência', 'Valor': metrics['risk_free_rate'], 'Formato': f"{metrics['risk_free_rate']:.4f}"},
         ]
 
-        if self.objective_var.get() == "Maximizar Linearidade do Excesso" and metrics.get('excess_r_squared') is not None:
+        if self.objective_var.get() in ("Maximizar Linearidade do Excesso", "Maximizar Sharpe do Excesso") and metrics.get('excess_r_squared') is not None:
             if hasattr(self.optimizer, 'risk_free_returns') and self.optimizer.risk_free_returns is not None:
                 excess_returns_daily = metrics['portfolio_returns_daily'] - self.optimizer.risk_free_returns.values
                 excess_vol = np.std(excess_returns_daily, ddof=0) * np.sqrt(252)
@@ -2514,10 +2516,10 @@ class PortfolioOptimizerGUI(QMainWindow):
                 "Maximizar Sortino Ratio": 'sortino',
                 "Minimizar Risco": 'volatility',
                 "Minimizar Under Water": 'under_water',
-                "Maximizar Inclinação": 'slope',
                 "Maximizar Inclinação/[(1-R²)×Vol]": 'hc10',
                 "Maximizar Qualidade da Linearidade": 'quality_linear',
-                "Maximizar Linearidade do Excesso": 'excess_hc10'
+                "Maximizar Linearidade do Excesso": 'excess_hc10',
+                "Maximizar Sharpe do Excesso": 'excess_sharpe'
             }
 
             objective_type = objective_map[self.objective_var.get()]
@@ -3189,10 +3191,12 @@ Isso ajuda a detectar:
                       'under_water': 'Minimizar Under Water',
                       'hc10': 'Maximizar Inc/[(1-R²)×Vol]',
                       'quality_linear': 'Qualidade da Linearidade',
-                      'excess_hc10': 'Linearidade do Excesso'}
+                      'excess_hc10': 'Linearidade do Excesso',
+                      'excess_sharpe': 'Sharpe do Excesso'}
         for key, default in [('sharpe', True), ('sortino', False),
                              ('volatility', False), ('under_water', False),
-                             ('hc10', False), ('quality_linear', False), ('excess_hc10', False)]:
+                             ('hc10', False), ('quality_linear', False),
+                             ('excess_hc10', False), ('excess_sharpe', False)]:
             cb = QCheckBox(obj_labels[key])
             cb.setChecked(default)
             obj_l.addWidget(cb)
@@ -3641,7 +3645,8 @@ Isso ajuda a detectar:
 
         obj_mapping = {'sharpe': 'sharpe', 'sortino': 'sortino',
                        'volatility': 'volatility', 'under_water': 'under_water',
-                       'hc10': 'hc10', 'quality_linear': 'quality_linear', 'excess_hc10': 'excess_hc10'}
+                       'hc10': 'hc10', 'quality_linear': 'quality_linear',
+                       'excess_hc10': 'excess_hc10', 'excess_sharpe': 'excess_sharpe'}
 
         for otim_period in selected_otim:
             for rebal_period in selected_rebal:
@@ -3917,7 +3922,8 @@ Isso ajuda a detectar:
                 objective_map = {
                     'sharpe': 'sharpe', 'sortino': 'sortino',
                     'volatility': 'volatility', 'under_water': 'under_water',
-                    'hc10': 'hc10', 'quality_linear': 'quality_linear', 'excess_hc10': 'excess_hc10'
+                    'hc10': 'hc10', 'quality_linear': 'quality_linear',
+                    'excess_hc10': 'excess_hc10', 'excess_sharpe': 'excess_sharpe'
                 }
 
                 target_return = config.get('target_return')
@@ -4192,7 +4198,8 @@ Isso ajuda a detectar:
 
         obj_names = {
             'sharpe': 'Sharpe', 'sortino': 'Sortino', 'volatility': 'MinRisco', 'under_water': 'MinUW',
-            'hc10': 'Inc/R²Vol', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso'
+            'hc10': 'Inc/R²Vol', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso',
+            'excess_sharpe': 'Sharpe.Exc'
         }
 
         for i, result in enumerate(results):
