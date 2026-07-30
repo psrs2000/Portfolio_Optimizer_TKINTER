@@ -3130,8 +3130,8 @@ Isso ajuda a detectar:
 
         left = QVBoxLayout()
         right = QVBoxLayout()
-        content_l.addLayout(left, 40)   # 40% esquerda: parâmetros
-        content_l.addLayout(right, 60)  # 60% direita: estimativa + tabela de 13 colunas
+        content_l.addLayout(left, 45)   # 45% esquerda: parâmetros
+        content_l.addLayout(right, 55)  # 55% direita: estimativa + tabela de 13 colunas
 
         # Grid de parâmetros (linhas 0/1 expandem; conteúdo ancorado no topo-esquerda)
         params_grid = QGridLayout()
