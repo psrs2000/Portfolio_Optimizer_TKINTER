@@ -3131,7 +3131,7 @@ Isso ajuda a detectar:
         left = QVBoxLayout()
         right = QVBoxLayout()
         content_l.addLayout(left, 40)   # 40% esquerda: parâmetros
-        content_l.addLayout(right, 60)  # 60% direita: estimativa + resultados
+        content_l.addLayout(right, 60)  # 60% direita: estimativa + tabela de 13 colunas
 
         # Grid de parâmetros (linhas 0/1 expandem; conteúdo ancorado no topo-esquerda)
         params_grid = QGridLayout()
@@ -3317,11 +3317,38 @@ Isso ajuda a detectar:
         export_l.addStretch()
         res_l.addLayout(export_l)
 
-        columns = ('Rank', 'Otim', 'Rebal/Aval', 'Obj', 'N_Ativos', 'Sharpe',
-                   'Ret%', 'TxRef%', 'Vol%', 'VaR95%', 'Pos>Ref%', 'Pos Abs%')
+        # Cabeçalhos curtos de propósito: com 13 colunas, títulos longos são o que
+        # estoura a largura (as células em si são curtas). O significado completo
+        # de cada um fica no tooltip do cabeçalho.
+        columns = ('#', 'Otim', 'Rebal', 'Obj', 'N_At', 'Sharpe',
+                   'Ret%', 'Meta%', 'Ref%', 'Vol%', 'VaR%', '>Ref%', 'Pos%')
         self.auto_results_columns = columns
         self.auto_results_tree = QTableWidget(0, len(columns))
         self.auto_results_tree.setHorizontalHeaderLabels(columns)
+
+        _tips = {
+            '#': 'Posição no ranking (ordenado por Sharpe out-of-sample)',
+            'Otim': 'Janela de otimização (in-sample) usada em cada step',
+            'Rebal': 'Frequência de rebalanceamento = período de avaliação de cada step',
+            'Obj': 'Objetivo de otimização usado',
+            'N_At': 'Número médio de ativos na carteira por step',
+            'Sharpe': 'Sharpe médio obtido FORA da amostra (validação)',
+            'Ret%': 'Retorno anualizado obtido FORA da amostra (validação)',
+            'Meta%': '% dos steps que cumpriram a Meta DENTRO da janela de otimização.\n'
+                     '100% com Ret% abaixo do alvo = meta batida in-sample que não se\n'
+                     'sustentou fora da amostra (restrição sem folga).\n'
+                     'Abaixo de 100% = alvo inatingível em alguns steps, valendo o\n'
+                     'fallback de maior retorno possível.\n'
+                     '"—" = meta não utilizada.',
+            'Ref%': 'Taxa de referência anualizada do período',
+            'Vol%': 'Volatilidade anualizada',
+            'VaR%': 'VaR 95% diário médio dos steps (risco de cauda)',
+            '>Ref%': '% de steps cujo retorno superou a taxa de referência do período',
+            'Pos%': '% de steps com retorno absoluto positivo',
+        }
+        for _c, _name in enumerate(columns):
+            if _name in _tips:
+                self.auto_results_tree.horizontalHeaderItem(_c).setToolTip(_tips[_name])
         _auto_header = self.auto_results_tree.horizontalHeader()
         _auto_header.setSectionResizeMode(QHeaderView.ResizeToContents)  # colunas ajustam ao conteúdo
         self.auto_results_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -3927,6 +3954,15 @@ Isso ajuda a detectar:
                     # Degradação graciosa: o step segue, mas fica registrado no log
                     print(f"⚠️ ATENÇÃO: {self.result['degraded_message']}")
 
+                # A meta é exigida DENTRO da janela de otimização (in-sample).
+                # Guardamos aqui se ela foi cumprida neste step, para depois medir
+                # quantos steps de fato bateram o alvo — o que separa "não atingiu
+                # porque era inatingível" de "atingiu mas não se sustentou fora
+                # da amostra". None = meta não estava em uso.
+                meta_ok_step = self.result.get('meta_atingida') if self.result.get('meta_used') else None
+                if meta_ok_step is False:
+                    print(f"⚠️ Meta NÃO atingida neste step (alvo in-sample não alcançável)")
+
                 optimized_weights = self.result['weights']
                 optimized_assets = self.result['assets']
 
@@ -4068,7 +4104,8 @@ Isso ajuda a detectar:
                     'risk_free_period': taxa_periodo_valid,
                     'excess_annual': excesso_anual_valid,
                     'var_95': var_95_daily_valid,
-                    'n_days': n_dias_corridos_valid
+                    'n_days': n_dias_corridos_valid,
+                    'meta_atingida': meta_ok_step
                 }
 
             finally:
@@ -4113,6 +4150,19 @@ Isso ajuda a detectar:
             avg_metrics['positive_return_pct'] = 0
             avg_metrics['positive_vs_ref_pct'] = 0
 
+        # % de steps que cumpriram a META dentro da janela de otimização.
+        # Diferente das colunas acima (que medem o resultado FORA da amostra),
+        # esta mostra se o alvo era alcançável onde o otimizador podia agir:
+        #  - 100% com Ret% abaixo do alvo => a meta foi batida in-sample mas
+        #    não se sustentou out-of-sample (restrição sem folga)
+        #  - abaixo de 100% => em alguns steps o alvo era inatingível e valeu o
+        #    fallback de "maior retorno possível"
+        # None quando a meta não estava em uso (coluna exibe "—").
+        meta_flags = [s['meta_atingida'] for s in step_metrics
+                      if s.get('meta_atingida') is not None]
+        avg_metrics['meta_ok_pct'] = (
+            sum(1 for f in meta_flags if f) / len(meta_flags) if meta_flags else None)
+
         avg_metrics['annual_return'] = retorno_anualizado
         avg_metrics['risk_free_annual'] = taxa_ref_anualizada
         avg_metrics['volatility'] = vol_media
@@ -4142,7 +4192,7 @@ Isso ajuda a detectar:
 
         obj_names = {
             'sharpe': 'Sharpe', 'sortino': 'Sortino', 'volatility': 'MinRisco', 'under_water': 'MinUW',
-            'hc10': 'Inc/[(1-R²)×Vol]', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso'
+            'hc10': 'Inc/R²Vol', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso'
         }
 
         for i, result in enumerate(results):
@@ -4158,6 +4208,9 @@ Isso ajuda a detectar:
                 (str(int(metrics['n_assets'])), metrics['n_assets']),
                 (f"{metrics['sharpe']:.3f}", metrics['sharpe']),
                 (f"{metrics['annual_return']:.1%}", metrics['annual_return']),
+                # MetaOK%: "—" quando a meta não foi usada (ordena por último)
+                ((f"{metrics['meta_ok_pct']:.0%}", metrics['meta_ok_pct'])
+                 if metrics.get('meta_ok_pct') is not None else ("—", -1.0)),
                 (f"{metrics.get('risk_free_annual', 0):.1%}", metrics.get('risk_free_annual', 0)),
                 (f"{metrics['volatility']:.1%}", metrics['volatility']),
                 (f"{metrics.get('var_95', 0):.2%}", metrics.get('var_95', 0)),
@@ -4202,7 +4255,7 @@ Isso ajuda a detectar:
 
             if filename:
                 columns = ['Rank', 'Otimização', 'Rebalanceamento', 'Objetivo',
-                           'N_Ativos', 'Sharpe', 'Retorno(%)', 'Taxa_Ref(%)',
+                           'N_Ativos', 'Sharpe', 'Retorno(%)', 'Meta_OK(%)', 'Taxa_Ref(%)',
                            'Volatilidade(%)', 'VaR95%(diário)', 'Pos>Ref(%)', 'Pos_Abs(%)']
                 data = self._auto_results_rows()
                 df = pd.DataFrame(data, columns=columns)
@@ -4226,7 +4279,7 @@ Isso ajuda a detectar:
 
             if filename:
                 columns = ['Rank', 'Otimização', 'Rebalanceamento', 'Objetivo',
-                           'N_Ativos', 'Sharpe', 'Retorno(%)', 'Taxa_Ref(%)',
+                           'N_Ativos', 'Sharpe', 'Retorno(%)', 'Meta_OK(%)', 'Taxa_Ref(%)',
                            'Volatilidade(%)', 'VaR95%(diário)', 'Pos>Ref(%)', 'Pos_Abs(%)']
                 data = self._auto_results_rows()
                 df = pd.DataFrame(data, columns=columns)
