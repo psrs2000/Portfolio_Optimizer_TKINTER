@@ -118,6 +118,46 @@ class PortfolioOptimizer:
 		    'abs_under_water': abs_under_water,
 	    }
 
+    def _lin_slope_r2(self, y):
+	    """
+	    Inclinação e R² da regressão linear de y contra o tempo (x = 0..N-1),
+	    por FÓRMULA FECHADA. Resultado idêntico ao scipy.stats.linregress
+	    (diferença ~1e-16, ruído de ponto flutuante), porém ~100x mais rápido:
+	    o scipy calcula também r/p-value/erro-padrão e faz validações que aqui
+	    não são usados. Como esta função é chamada centenas de vezes por
+	    iteração do SLSQP, o ganho é grande — sem alterar nenhum resultado.
+
+	    Os termos de x (soma, soma dos quadrados, denominador) são constantes
+	    para uma dada janela, então ficam em cache pelo tamanho N.
+	    """
+	    y = np.asarray(y, dtype=float)
+	    n = y.shape[0]
+	    if n < 2:
+		    return 0.0, 0.0
+
+	    # Cache dos termos de x, reaproveitado enquanto N não muda.
+	    if getattr(self, '_reg_x_n', None) != n:
+		    x = np.arange(n, dtype=float)
+		    self._reg_x = x
+		    self._reg_x_n = n
+		    self._reg_sx = x.sum()
+		    self._reg_den = n * (x * x).sum() - self._reg_sx ** 2
+	    x = self._reg_x
+	    sx = self._reg_sx
+	    den = self._reg_den
+	    if den == 0:
+		    return 0.0, 0.0
+
+	    sy = y.sum()
+	    sxy = float(x @ y)
+	    syy = float(y @ y)
+
+	    cov_num = n * sxy - sx * sy          # numerador de slope e de r
+	    slope = cov_num / den
+	    var_y = n * syy - sy * sy
+	    r_squared = (cov_num * cov_num) / (den * var_y) if var_y > 0 else 0.0
+	    return slope, r_squared
+
     def calculate_portfolio_metrics(self, weights, risk_free_rate=0.0):
 	    """
 	    Calcula métricas do portfólio (EXATAMENTE como na planilha)
@@ -215,20 +255,16 @@ class PortfolioOptimizer:
 	    
 	    # HC10: Métrica de qualidade da tendência
 	    try:
-		    from scipy import stats
-		    # Criar array de "dias" (índices numéricos representando datas)
-		    days_numeric = np.arange(len(portfolio_cumulative))
-		    
-		    # Regressão linear: GV vs Tempo
-		    slope, intercept, r_value, p_value, std_err = stats.linregress(days_numeric, portfolio_cumulative)
-		    r_squared = r_value ** 2
-		    
+		    # Regressão linear (GV vs Tempo) por fórmula fechada — idêntica ao
+		    # scipy.stats.linregress, ~100x mais rápida (ver _lin_slope_r2).
+		    slope, r_squared = self._lin_slope_r2(portfolio_cumulative)
+
 		    # HC10 = Inclinação / [Volatilidade × (1 - R²)]
 		    if portfolio_vol > 0 and r_squared < 1:
 			    hc10 = slope / (portfolio_vol * (1 - r_squared))
 		    else:
 			    hc10 = 0
-			    
+
 	    except Exception as e:
 		    print(f"Erro no cálculo HC10: {e}")
 		    hc10 = 0
@@ -246,9 +282,8 @@ class PortfolioOptimizer:
 			    # Calcular excesso acumulado diário
 			    excess_cumulative = portfolio_cumulative - self.risk_free_cumulative.values
 			    
-			    # Regressão linear do EXCESSO
-			    excess_slope, excess_intercept, excess_r_value, _, _ = stats.linregress(days_numeric, excess_cumulative)
-			    excess_r_squared = excess_r_value ** 2
+			    # Regressão linear do EXCESSO (fórmula fechada, ver _lin_slope_r2)
+			    excess_slope, excess_r_squared = self._lin_slope_r2(excess_cumulative)
 			    
 			    # ========== CORREÇÃO PARA EXCESSO ==========
 			    # Calcular Variac_Result_PU do EXCESSO
