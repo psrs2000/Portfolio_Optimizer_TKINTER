@@ -3320,18 +3320,18 @@ Isso ajuda a detectar:
         # Cabeçalhos curtos de propósito: com 13 colunas, títulos longos são o que
         # estoura a largura (as células em si são curtas). O significado completo
         # de cada um fica no tooltip do cabeçalho.
-        columns = ('#', 'Otim', 'Rebal', 'Obj', 'N_At', 'Sharpe',
-                   'Ret%', 'Meta%', 'Ref%', 'Vol%', 'VaR%', '>Ref%', 'Pos%')
+        columns = ('#', 'Otimização', 'Rebalanc.', 'Objetivo', 'N_Ativos', 'Sharpe',
+                   'Ret%', 'Meta%', 'Ref%', 'Vol%', 'VaR%', '>Ref%', '>0%')
         self.auto_results_columns = columns
         self.auto_results_tree = QTableWidget(0, len(columns))
         self.auto_results_tree.setHorizontalHeaderLabels(columns)
 
         _tips = {
             '#': 'Posição no ranking (ordenado por Sharpe out-of-sample)',
-            'Otim': 'Janela de otimização (in-sample) usada em cada step',
-            'Rebal': 'Frequência de rebalanceamento = período de avaliação de cada step',
-            'Obj': 'Objetivo de otimização usado',
-            'N_At': 'Número médio de ativos na carteira por step',
+            'Otimização': 'Janela de otimização (in-sample) usada em cada step',
+            'Rebalanc.': 'Frequência de rebalanceamento = período de avaliação de cada step',
+            'Objetivo': 'Objetivo de otimização usado',
+            'N_Ativos': 'Número médio de ativos na carteira por step',
             'Sharpe': 'Sharpe médio obtido FORA da amostra (validação)',
             'Ret%': 'Retorno anualizado obtido FORA da amostra (validação)',
             'Meta%': '% dos steps que cumpriram a Meta DENTRO da janela de otimização.\n'
@@ -3344,7 +3344,7 @@ Isso ajuda a detectar:
             'Vol%': 'Volatilidade anualizada',
             'VaR%': 'VaR 95% diário médio dos steps (risco de cauda)',
             '>Ref%': '% de steps cujo retorno superou a taxa de referência do período',
-            'Pos%': '% de steps com retorno absoluto positivo',
+            '>0%': '% de steps com retorno absoluto positivo',
         }
         for _c, _name in enumerate(columns):
             if _name in _tips:
