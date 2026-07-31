@@ -6,27 +6,29 @@ Documento de referência completo para operação do sistema de
 
 otimização de portfólio com walk-forward e ranking automático de ativos.
 
-Versão 2.0 • 2026
+Versão 3.0 • 2026
 
 # 1\. Introdução
 
-O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python, disponível em duas versões de interface gráfica equivalentes — **Tkinter** (`desktop_app_FULL.py`) e **PyQt5** (`desktop_app_qt.py`). Ambas compartilham exatamente o mesmo motor de cálculo (`optimizer.py`) e oferecem as mesmas funcionalidades e abas; escolha a que preferir. Seu objetivo é auxiliar analistas e gestores a construir carteiras de ativos financeiros de forma quantitativa, combinando técnicas de otimização matemática, análise de risco e validação fora da amostra (out-of-sample).
+O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com interface **PyQt5** (`desktop_app_qt.py`), apoiada no motor de cálculo `optimizer.py`. Seu objetivo é auxiliar analistas e gestores a construir carteiras de ativos financeiros de forma quantitativa, combinando técnicas de otimização matemática, análise de risco e validação fora da amostra (out-of-sample).
+
+⚠️ **Sobre a versão Tkinter:** o projeto nasceu em Tkinter (`desktop_app_FULL.py`) e esse arquivo continua no repositório por referência histórica, mas **não é mais mantido**. Ele não possui os recursos introduzidos a partir da versão 2.1 (objetivos Under Water e Sharpe do Excesso, meta absoluta, tabela ordenável, coluna Meta%, degradação graciosa, exportação numérica, entre outros). **Use sempre a versão PyQt5.**
 
 ## 1.1 Principais Funcionalidades
 
-- Duas interfaces gráficas equivalentes: Tkinter e PyQt5.
 - Carregamento de dados históricos de preços via planilha Excel.
 - Configuração de janelas temporais separadas para otimização e validação.
-- Múltiplos objetivos de otimização: Sharpe, Sortino, risco mínimo, linearidade e outros.
+- **Oito objetivos de otimização**, incluindo Sharpe, Sortino, Under Water, linearidade e dois objetivos aplicados ao excesso sobre a referência.
 - Restrições globais e individuais de peso por ativo, com importação via arquivo Excel/CSV.
-- Meta de retorno opcional: exige que o portfólio supere a referência por um percentual definido.
-- Suporte a posições vendidas (short selling / hedge).
+- **Meta de retorno opcional em dois modos:** relativa à referência ou absoluta (% ao ano).
+- Suporte a posições vendidas (short selling / hedge), inclusive na Auto-Otimização.
 - Sistema de ranking automático de ativos com pesos personalizáveis.
 - Resultados in-sample e out-of-sample comparados lado a lado.
 - Tabelas de retornos mensais com cálculo de excesso sobre a referência.
 - Auto-Otimização com walk-forward sobre múltiplas combinações de parâmetros.
-- Solver com multi-start automático para escapar de ótimos locais/travamentos.
-- Exportação de resultados para CSV e Excel.
+- **Tabela de resultados ordenável** por qualquer coluna, com ordenação numérica correta.
+- Solver com multi-start automático e **degradação graciosa** (entrega a melhor carteira viável em vez de abortar).
+- **Exportação para CSV e Excel com valores numéricos de verdade**, prontos para cálculo.
 
 ## 1.2 Requisitos do Sistema
 
@@ -34,23 +36,19 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python, di
 | ---------------------- | -------------------------------------------- |
 | Sistema Operacional    | Windows 10/11, Linux ou macOS                |
 | Python                 | 3.8 ou superior (recomendado 3.10+)          |
-| Bibliotecas comuns     | pandas, numpy, scipy, matplotlib, openpyxl   |
-| Versão Tkinter         | tkcalendar (para o seletor de datas)         |
-| Versão PyQt5           | PyQt5                                        |
+| Bibliotecas            | PyQt5, pandas, numpy, scipy, matplotlib, openpyxl |
 | Módulo adicional       | optimizer.py (incluso no projeto)            |
-| Resolução de tela      | Mínimo 1400 × 900 pixels                     |
+| Resolução de tela      | Mínimo 1400 × 900 pixels (recomendado 2100+ de largura para ver a tabela da Auto-Otimização inteira) |
 | Formato de dados       | Planilha Excel (.xlsx ou .xls) e CSV         |
 
 ## 1.3 Como Iniciar o Programa
 
 - Abra o terminal (Prompt de Comando ou PowerShell no Windows).
 - Navegue até a pasta onde os arquivos do projeto estão localizados.
-- Execute a versão desejada:
-  - **Tkinter:** `python desktop_app_FULL.py`
-  - **PyQt5:** `python desktop_app_qt.py`
+- Execute: `python desktop_app_qt.py`
 - A janela principal do programa será exibida.
 
-💡 O arquivo optimizer.py precisa estar na mesma pasta que o aplicativo (`desktop_app_FULL.py` ou `desktop_app_qt.py`) para o programa funcionar corretamente. As duas versões são intercambiáveis e produzem os mesmos resultados.
+💡 O arquivo `optimizer.py` precisa estar na mesma pasta que `desktop_app_qt.py` para o programa funcionar corretamente.
 
 # 2\. Estrutura da Interface
 
@@ -59,7 +57,7 @@ A interface é organizada em 8 abas (tabs) na parte superior da janela. O fluxo 
 | **Aba**             | **Função**                                                                |
 | ------------------- | ------------------------------------------------------------------------- |
 | 📁 Dados            | Carregar planilha Excel, configurar janelas temporais e selecionar ativos |
-| ⚙️ Configuração     | Definir objetivo de otimização, limites de peso e taxa de referência      |
+| ⚙️ Configuração     | Definir objetivo de otimização, limites de peso, taxa de referência e meta de retorno |
 | 🔧 Avançado         | Configurar restrições individuais de peso por ativo                       |
 | 🔄 Short/Hedge      | Definir posições vendidas com pesos negativos                             |
 | 🏆 Ranking          | Calcular e aplicar ranking automático de ativos                           |
@@ -137,10 +135,20 @@ Selecione um dos objetivos disponíveis pelo botão de rádio:
 | Maximizar Sharpe Ratio              | Maximiza o retorno excedente à taxa de referência por unidade de risco. Objetivo mais comum para carteiras balanceadas.                |
 | Maximizar Sortino Ratio             | Semelhante ao Sharpe, mas penaliza apenas a volatilidade de queda (downside). Não pune oscilações de alta — útil quando a preocupação é o risco de perda.  |
 | Minimizar Risco                     | Minimiza a volatilidade do portfólio independentemente do retorno. Ideal para perfis conservadores.                                    |
-| Maximizar Inclinação                | Maximiza a inclinação da regressão linear do retorno acumulado. Prioriza ativos com tendência de alta consistente.                     |
+| Minimizar Under Water               | Minimiza o **total de perdas acumuladas** do período — a soma de todos os retornos diários negativos. É uma medida de risco **assimétrica**: pune apenas queda, nunca oscilação de alta (ao contrário da volatilidade). Combina especialmente bem com a Meta de Retorno. |
 | Maximizar Inclinação/\[(1-R²)×Vol\] | Combina a inclinação com a qualidade da linearidade e a volatilidade. Penaliza ativos com retornos irregulares.                        |
 | Maximizar Qualidade da Linearidade  | Maximiza o R² da regressão do retorno acumulado. Prioriza ativos com comportamento linear e previsível.                                |
-| Maximizar Linearidade do Excesso    | Igual ao anterior, mas aplicado ao excesso de retorno sobre a referência. Disponível apenas quando uma taxa de referência é detectada. |
+
+### Objetivos com Taxa de Referência
+
+Os dois objetivos abaixo aparecem em uma seção separada e só ficam disponíveis quando há taxa de referência. Ambos trabalham sobre a curva do **excesso** (carteira − referência):
+
+| **Objetivo**                     | **Descrição**                                                                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Maximizar Linearidade do Excesso | Maximiza `inclinação_excesso ÷ [(1 − R²_excesso) × vol_excesso]`. Premia uma curva de excesso **reta** (R² alto), ou seja, uma vantagem sobre a referência que cresce de forma regular. |
+| Maximizar Sharpe do Excesso      | É a Linearidade do Excesso **sem o fator (1 − R²)**: maximiza `inclinação_excesso ÷ vol_excesso`. Premia o **risco-retorno** do excesso sem exigir linearidade. |
+
+💡 O objetivo "Maximizar Inclinação" (isolado) foi **removido** na versão 3.0 por não apresentar vantagem prática sobre os demais critérios. O cálculo de inclinação usado na aba Ranking é independente e continua funcionando normalmente.
 
 ## 4.2 Limites de Peso Globais
 
@@ -160,20 +168,31 @@ A taxa de referência é usada para calcular o Sharpe Ratio e o excesso de retor
 
 ## 4.4 Meta de Retorno (Opcional)
 
-A meta de retorno permite exigir que o portfólio supere a referência por um percentual definido, combinando essa exigência com o objetivo escolhido acima. Na prática, o otimizador busca **atingir a meta com o menor risco possível** — o ponto ideal entre "maximizar retorno" e "minimizar risco".
+A meta de retorno permite exigir um retorno mínimo do portfólio, combinando essa exigência com o objetivo escolhido acima. Na prática, o otimizador busca **atingir a meta com o menor risco possível** — o ponto ideal entre "maximizar retorno" e "minimizar risco".
 
-- Marque **'Exigir meta de retorno mínima'** e informe o valor no campo **'Meta (% acima da referência)'**.
-- A meta é **relativa** à referência: o alvo é `Referência × (1 + Meta ÷ 100)`. Exemplo: com referência de 12% no período e meta de 5%, o alvo é 12% × 1,05 = **12,6%**.
-- O otimizador maximiza o objetivo escolhido garantindo **pelo menos** esse retorno no período.
+Marque **'Exigir meta de retorno mínima'** e escolha um dos dois modos:
+
+| **Modo**     | **Como o alvo é calculado**                                    | **Quando usar**                                                        |
+| ------------ | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **Relativa** | `Referência × (1 + Meta ÷ 100)` no período. Ex.: referência 12% e meta 5% → alvo **12,6%**. | Quando o que importa é bater a referência por uma margem ("quero 30% acima do CDI"). Acompanha automaticamente a referência de cada step. |
+| **Absoluta** | `(1 + Meta ÷ 100)^(pregões ÷ 252) − 1`. Ex.: 15% ao ano em 126 pregões → alvo **7,24%** no período. | Quando você pensa em retorno-alvo próprio ("quero 15% ao ano") ou **quando não há taxa de referência**. |
+
+- O otimizador maximiza o objetivo escolhido garantindo **pelo menos** esse retorno acumulado no período.
 - Se a meta for **inatingível** com os ativos e limites atuais, o sistema não falha: retorna a carteira de **maior retorno possível** e avisa que a meta não foi atingida.
 
-⚠️ Como a meta é relativa à referência, ela depende de uma referência maior que zero (detectada na planilha ou informada manualmente). Sem referência, o alvo é zero e a meta não tem efeito.
+⚠️ **A meta relativa exige referência maior que zero.** Sem referência, o alvo vira `0 × (1 + Meta) = 0` e a restrição não exige nada. É justamente esse buraco que a **meta absoluta** preenche — ela funciona independentemente da referência.
 
-💡 A mensagem de conclusão informa se a meta foi atingida e mostra o alvo calculado (ex.: 'referência 12,00% × (1+5,0%) = 12,60%').
+⚠️ **A meta absoluta é absoluta, não "acima da referência".** Com meta absoluta de 30% e referência de 19% ao ano, o alvo é **30% ao ano** (e não 49%). Se você quer "x% acima da referência", use o modo **relativa**.
+
+💡 **Meta absoluta e os objetivos do Excesso são independentes.** Nos objetivos "Linearidade do Excesso" e "Sharpe do Excesso", o *objetivo* trabalha sobre o excesso (carteira − referência), enquanto a *meta* é uma restrição sobre o retorno **total**. A combinação significa: "entre as carteiras que rendem pelo menos X ao ano, escolha a de melhor excesso sobre a referência". Como esses objetivos costumam superar bastante o alvo, é comum a meta absoluta ficar folgada.
+
+💡 A conversão anual→período é exata e usa a mesma convenção do otimizador (252 pregões): exigir o alvo equivale a exigir `retorno anualizado ≥ meta`. A mensagem de conclusão informa o alvo, o retorno obtido no período e, no modo absoluto, também o retorno anualizado.
 
 ## 4.5 Executar a Otimização
 
 **Clique em 🚀 OTIMIZAR PORTFÓLIO** para iniciar o processo. Uma janela de progresso será exibida enquanto o algoritmo executa. Ao concluir, o programa navegará automaticamente para a aba Resultados.
+
+💡 Se o solver não convergir plenamente mas encontrar uma carteira viável, o programa exibe **"Otimização concluída com ressalvas"** (aviso, não erro) e preenche os resultados normalmente. Ver a seção 12.7 — Degradação Graciosa.
 
 # 5\. Aba Avançado - Restrições Individuais
 
@@ -438,9 +457,11 @@ Selecione um ou mais objetivos. O sistema testará cada combinação para cada o
 - Maximizar Sharpe
 - Maximizar Sortino
 - Minimizar Risco
+- Minimizar Under Water
 - Maximizar Inc/\[(1-R²)×Vol\]
 - Qualidade da Linearidade
 - Linearidade do Excesso
+- Sharpe do Excesso
 
 ### Posições Vendidas (Opcional)
 
@@ -454,7 +475,7 @@ Marque **'Habilitar posições short'** e clique em **📋 Selecionar Ativos par
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Score Min / Max (0-100) | Intervalo do ranking de ativos. Ativos com índice fora deste intervalo são excluídos da otimização em cada step. Valor 0-100 = todos os ativos. |
 | Peso Min (%) / Max (%)  | Limites globais de peso aplicados em cada step da otimização.                                                                                   |
-| Meta de Retorno         | Opcional. Marque 'Exigir meta' e informe o % acima da referência. A meta (`referência × (1 + %)`) é aplicada em cada step do walk-forward, relativa à referência daquele período. |
+| Meta de Retorno         | Opcional. Marque 'Exigir meta' e escolha o modo: **% acima da ref.** (relativa) ou **% ao ano** (absoluta). A meta é aplicada **em cada step** do walk-forward — na relativa, contra a referência daquele período; na absoluta, convertida para os pregões daquela janela. O cumprimento por step é reportado na coluna **Meta%** da tabela de resultados. |
 
 ## 10.3 Estimar e Executar
 
@@ -470,23 +491,44 @@ Ao concluir, a tabela exibe todas as configurações válidas ordenadas pelo Sha
 
 | **Coluna** | **Descrição**                                                                      |
 | ---------- | ---------------------------------------------------------------------------------- |
-| Rank       | Posição na classificação (1 = melhor Sharpe).                                      |
-| Otim       | Janela de otimização usada.                                                        |
-| Rebal/Aval | Janela de validação/rebalanceamento.                                               |
-| Obj        | Objetivo de otimização.                                                            |
+| #          | Posição na classificação (1 = melhor Sharpe).                                      |
+| Otimização | Janela de otimização usada.                                                        |
+| Rebalanc.  | Janela de validação/rebalanceamento.                                               |
+| Objetivo   | Objetivo de otimização.                                                            |
 | N_Ativos   | Número médio de ativos por step.                                                   |
 | Sharpe     | Sharpe Ratio final acumulado (retorno anualizado − taxa ref) ÷ volatilidade média. |
-| Ret%       | Retorno anualizado acumulado de todos os steps.                                    |
-| TxRef%     | Taxa de referência anualizada acumulada.                                           |
+| Ret%       | Retorno anualizado acumulado de todos os steps (**fora da amostra**).              |
+| Meta%      | Percentual de steps que cumpriram a Meta **dentro da janela de otimização**. Exibe "—" quando a meta não foi usada. Ver interpretação abaixo. |
+| Ref%       | Taxa de referência anualizada acumulada.                                           |
 | Vol%       | Volatilidade média dos steps.                                                      |
-| VaR95%     | VaR 95% diário médio dos steps (perda esperada nos piores 5% dos dias). Risco de cauda. |
-| Pos>Ref%   | Percentual de períodos (steps de rebalanceamento) em que o retorno superou a taxa de referência do período. |
-| Pos Abs%   | Percentual de períodos (steps de rebalanceamento) com retorno positivo em termos absolutos. |
+| VaR%       | VaR 95% diário médio dos steps (perda esperada nos piores 5% dos dias). Risco de cauda. |
+| >Ref%      | Percentual de períodos (steps de rebalanceamento) em que o retorno superou a taxa de referência do período. |
+| >0%        | Percentual de períodos (steps de rebalanceamento) com retorno positivo em termos absolutos. |
+
+💡 **Cabeçalhos abreviados com tooltip:** passe o mouse sobre qualquer título de coluna para ver a explicação completa do que ela mede.
+
+💡 **Tabela ordenável:** clique em qualquer cabeçalho para reordenar por aquela coluna; clique de novo para inverter. A ordenação é **numérica** (e não alfabética), então `10` vem depois de `3` e `2.101` depois de `18.5%`, como esperado.
+
+### Como interpretar a coluna Meta%
+
+A coluna Meta% mede o cumprimento da meta **onde o otimizador podia agir** (dentro da amostra), enquanto Ret% mede o resultado **fora da amostra**. Cruzar as duas separa duas causas bem diferentes de um retorno abaixo do alvo:
+
+| **Meta%** | **Leitura**                                                                                                    |
+| --------- | -------------------------------------------------------------------------------------------------------------- |
+| 100% com Ret% abaixo do alvo | A meta foi batida in-sample, mas **não se sustentou fora da amostra**. Típico dos minimizadores de risco (Minimizar Risco, Under Water): a meta é restrição ativa, a carteira encosta exatamente no alvo e fica **sem folga** — qualquer degradação out-of-sample derruba o número. |
+| Abaixo de 100%               | Em alguns steps o alvo era **inatingível** com os limites vigentes, valendo o fallback de "maior retorno possível". |
+| "—"                          | A meta não estava em uso nessa execução.                                                                       |
+
+💡 Objetivos que buscam retorno por natureza (Sharpe, Sortino) tendem a **passar longe** do alvo in-sample, guardando folga que sobrevive fora da amostra. Se a meta relativa está sendo cumprida in-sample mas não se sustenta, considere pedir uma margem maior.
 
 ## 10.5 Exportação dos Resultados
 
-- **💾 Exportar CSV:** salva toda a tabela em formato CSV com codificação UTF-8.
-- **📊 Exportar Excel:** salva a tabela em .xlsx com ajuste automático da largura das colunas.
+Ambas as exportações gravam **valores numéricos de verdade** (não texto), respeitando a ordenação atual da tabela — o que você vê é o que é exportado.
+
+- **💾 Exportar CSV:** separador `;` e decimal `,` (padrão brasileiro, que o Excel pt-BR abre com duplo clique sem passar pelo assistente de importação). Os percentuais saem já multiplicados por 100, coerentes com o cabeçalho `(%)`.
+- **📊 Exportar Excel:** percentuais gravados como **percentual nativo** do Excel (formatos `0,0%`, `0,00%`), Sharpe com formato `0,000`, Rank e N_Ativos como inteiros. Inclui cabeçalho em negrito, painel congelado na primeira linha, autofiltro e ajuste automático da largura das colunas.
+
+💡 Como os valores são números reais, o separador decimal exibido é o do **seu sistema** (vírgula no Brasil) e as células podem ser somadas, ordenadas e usadas em fórmulas normalmente. Quando a meta não é usada, a célula de Meta_OK fica **vazia** (em vez de "—"), para não atrapalhar cálculos.
 
 # 11\. Fluxo de Trabalho Recomendado
 
@@ -546,6 +588,29 @@ Alguns objetivos não-lineares (como Inclinação/\[(1-R²)×Vol\] e Linearidade
 - **Custo:** o multi-start só é acionado quando há travamento, então otimizações que convergem normalmente não ficam mais lentas. Nos casos travados, a otimização pode demorar mais alguns segundos (especialmente com muitos ativos), pois testa vários reinícios.
 - **Reprodutibilidade:** os reinícios usam uma semente fixa, então a mesma configuração sempre produz o mesmo resultado.
 
+## 12.7 Degradação Graciosa (em vez de "Otimização falhou")
+
+Em janelas difíceis — tipicamente quando há **mais ativos do que dias** no período de otimização — o solver pode não convergir formalmente e retornar a mensagem `Positive directional derivative for linesearch`. Antes, isso abortava a otimização sem mostrar resultado algum.
+
+Agora, quando os pesos em mãos formam uma **carteira viável** (respeitam os limites e somam 100% após normalização), o sistema entrega essa carteira com um aviso, em vez de falhar:
+
+- Na otimização manual, aparece a mensagem **"Otimização concluída com ressalvas"** (aviso, não erro), e a aba Resultados é preenchida normalmente com todas as métricas.
+- Na Auto-Otimização, a ressalva é registrada no log do step e o processo **segue** para os próximos steps.
+- Se os pesos realmente não forem aproveitáveis, o erro original continua sendo exibido.
+- Há também um aviso específico quando o objetivo termina em região inválida (ex.: inclinação negativa), caso em que a carteira devolvida pode estar próxima do ponto de partida.
+
+⚠️ **Causa de raiz:** ter mais ativos do que dias torna o problema matematicamente mal-posto — existem infinitas carteiras que parecem ótimas dentro da amostra, e a maioria é ajuste ao ruído. A degradação graciosa evita a interrupção, mas o remédio de verdade é **reduzir o universo de ativos** (use o Ranking por Score) para que ele fique confortavelmente abaixo do número de dias da janela.
+
+## 12.8 Desempenho
+
+O motor de cálculo passou por otimizações que reduziram bastante o tempo das rodadas, **sem alterar nenhum resultado**:
+
+- **Caminho de cálculo enxuto:** para os objetivos simples (Sharpe, Sortino, Under Water, Minimizar Risco), cada avaliação dentro do laço do solver calcula apenas o necessário, sem VaR, CVaR nem regressões. As métricas completas continuam sendo calculadas uma única vez, ao final, sobre os pesos ótimos — a aba Resultados e as tabelas não mudam.
+- **Sortino suavizado:** o *downside deviation* usa o semi-desvio clássico de Sortino & Price, `√(média(mín(retorno,0)²))`, que é diferenciável. A forma anterior (desvio-padrão apenas do subconjunto de dias negativos) tinha "quinas" que deixavam o solver lento e sujeito a falhas de convergência.
+- **Regressão por fórmula fechada:** a inclinação e o R² usados por HC10, Linearidade do Excesso e Sharpe do Excesso são calculados diretamente, em vez de via `scipy.stats.linregress`. O resultado é idêntico (diferença ~1e-15, ruído de ponto flutuante) e o cálculo de métricas completas ficou **cerca de 5× mais rápido**.
+
+💡 Se você usava versões anteriores, note que os **valores de Sortino mudaram de magnitude** por causa da nova fórmula (o denominador passou a ser calculado sobre todos os períodos). O ranking relativo entre carteiras se mantém.
+
 # 13\. Glossário
 
 | **Termo**                      | **Definição**                                                                                                                                                            |
@@ -557,8 +622,13 @@ Alguns objetivos não-lineares (como Inclinação/\[(1-R²)×Vol\] e Linearidade
 | Walk-Forward                   | Metodologia de backtest que simula a operação real do portfólio: treina em uma janela, valida na seguinte, avança no tempo e repete.                                     |
 | Sharpe Ratio                   | (Retorno anualizado − Taxa de referência anualizada) ÷ Volatilidade anualizada.                                                                                          |
 | Sortino Ratio                  | Semelhante ao Sharpe, mas divide o excesso de retorno apenas pela volatilidade de queda (downside deviation), ignorando as oscilações de alta.                            |
-| Meta de Retorno                | Alvo de retorno relativo à referência, definido como Referência × (1 + Meta ÷ 100). O otimizador busca atingi-lo com o menor risco possível.                             |
+| Downside Deviation             | Semi-desvio-padrão das perdas: √(média(mín(retorno, 0)²)), anualizado. Denominador do Sortino.                                                                            |
+| Under Water (Total)            | Soma de todos os retornos diários negativos do período; em valor absoluto, o total de perdas acumuladas. Medida de risco **assimétrica** — pune apenas queda, nunca alta. |
+| Sharpe do Excesso              | Inclinação da regressão do excesso acumulado dividida pela volatilidade do excesso. É a Linearidade do Excesso sem o fator (1 − R²).                                      |
+| Meta de Retorno                | Retorno mínimo exigido do portfólio, combinado ao objetivo escolhido. Em dois modos: **relativa** (Referência × (1 + Meta ÷ 100)) ou **absoluta** ((1 + Meta)^(pregões ÷ 252) − 1, independente da referência). |
 | Multi-Start                    | Estratégia do solver que reinicia a otimização a partir de vários pontos iniciais quando detecta travamento, escapando de ótimos locais e devolvendo o melhor resultado.  |
+| Degradação Graciosa            | Comportamento do sistema quando o solver não converge formalmente: em vez de abortar, entrega a melhor carteira **viável** encontrada (dentro dos limites e somando 100%) acompanhada de um aviso. |
+| In-Sample vs Out-of-Sample (Meta) | A meta é exigida **dentro** da janela de otimização; o Ret% da tabela mede o resultado **fora** dela. A coluna Meta% mostra o cumprimento in-sample, permitindo distinguir "alvo inatingível" de "alvo atingido que não se sustentou". |
 | VaR 95%                        | Value at Risk: estimativa paramétrica da perda máxima esperada em 95% dos dias (μ − 1,65σ).                                                                              |
 | CVaR 95%                       | Conditional VaR: média das perdas nos 5% piores dias. Mede o risco de cauda (tail risk).                                                                                 |
 | R²                             | Coeficiente de determinação da regressão linear do retorno acumulado. Mede a linearidade da evolução do portfólio (valores próximos de 1 indicam tendência mais linear). |
