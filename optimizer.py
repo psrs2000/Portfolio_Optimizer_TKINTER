@@ -456,12 +456,39 @@ class PortfolioOptimizer:
 
         return np.clip(w, lows, highs)
 
+    def _meta_threshold(self, target_return, target_annual, risk_free_rate):
+        """
+        Converte a meta escolhida no limiar de retorno ACUMULADO do período que
+        a carteira precisa alcançar (mesma grandeza de gv_final).
+
+        Dois modos, mutuamente exclusivos:
+        - RELATIVA (target_return): alvo = referência × (1 + meta).
+          Depende da taxa de referência; se ela for zero, o alvo é zero.
+        - ABSOLUTA (target_annual): meta anual independente de referência.
+          alvo = (1 + meta_anual)^(períodos/252) - 1, usando a MESMA convenção
+          de anualização do próprio otimizador (252 períodos de pregão), de
+          modo que exigir o alvo equivale exatamente a exigir
+          annual_return >= meta_anual. A potência é calculada UMA vez, fora do
+          laço do solver.
+
+        Retorna (meta_required, meta_mode) ou (None, None) se não há meta.
+        """
+        if target_annual is not None:
+            n = max(int(self.n_periods), 1)
+            return (1.0 + target_annual) ** (n / 252.0) - 1.0, 'absoluta'
+        if target_return is not None:
+            return risk_free_rate * (1 + target_return), 'relativa'
+        return None, None
+
     def optimize_portfolio(self, objective_type='sharpe', target_return=None, max_weight=1.0, min_weight=0.0,
-                          risk_free_rate=0.0, individual_constraints=None):
+                          risk_free_rate=0.0, individual_constraints=None, target_annual=None):
         """
         Otimiza o portfólio (substitui o Solver do Excel)
         risk_free_rate: taxa livre de risco acumulada do período
         individual_constraints: dicionário com limites específicos por ativo
+        target_return: meta RELATIVA — % acima da taxa de referência
+        target_annual: meta ABSOLUTA — % ao ano, independente da referência
+                       (tem precedência se ambas forem informadas)
         """
         
         def objective_function(weights):
@@ -588,16 +615,16 @@ class PortfolioOptimizer:
             {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
         ]
 
-        # META DE RETORNO (opcional): exige retorno do período >= referência × (1 + meta)
-        # Ex.: referência 12% e meta 5% -> alvo = 0.12 × 1.05 = 0.126 (12,6%)
-        meta_used = target_return is not None
-        meta_required = risk_free_rate * (1 + target_return) if meta_used else None
+        # META DE RETORNO (opcional), relativa à referência ou absoluta ao ano.
+        # O limiar do período é calculado UMA vez aqui (ver _meta_threshold).
+        meta_required, meta_mode = self._meta_threshold(target_return, target_annual, risk_free_rate)
+        meta_used = meta_required is not None
         if meta_used:
             constraints.append({
                 'type': 'ineq',
                 'fun': lambda w: self._core_metrics(w, risk_free_rate)['gv_final'] - meta_required
             })
-        
+
         # Limites para cada peso
         if individual_constraints is not None:
             # Usar limites individuais
@@ -683,9 +710,12 @@ class PortfolioOptimizer:
                 out['degraded_message'] = " ".join(avisos)
             if meta_used:
                 out['meta_used'] = True
+                out['meta_mode'] = meta_mode          # 'relativa' ou 'absoluta'
                 out['meta_target'] = target_return
+                out['meta_annual'] = target_annual
                 out['meta_required'] = meta_required
                 out['meta_achieved'] = metrics['gv_final']
+                out['meta_achieved_annual'] = metrics['annual_return']
                 out['meta_ref'] = risk_free_rate
                 out['meta_atingida'] = metrics['gv_final'] >= meta_required - 1e-6
             return out
@@ -698,13 +728,15 @@ class PortfolioOptimizer:
     
     def optimize_portfolio_with_shorts(self, selected_assets, short_assets, short_weights,
                                      objective_type='sharpe', target_return=None, max_weight=1.0, min_weight=0.0,
-                                     risk_free_rate=0.0, individual_constraints=None):
+                                     risk_free_rate=0.0, individual_constraints=None, target_annual=None):
         """
         Otimiza portfólio com posições short fixas
         selected_assets: lista de ativos para otimizar (long)
         short_assets: lista de ativos short
         short_weights: dicionário com pesos dos ativos short
         individual_constraints: dicionário com limites específicos por ativo
+        target_return: meta RELATIVA — % acima da taxa de referência
+        target_annual: meta ABSOLUTA — % ao ano, independente da referência
         """
         # Índices dos ativos
         selected_indices = [self.assets.index(asset) for asset in selected_assets]
@@ -807,9 +839,9 @@ class PortfolioOptimizer:
             {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
         ]
 
-        # META DE RETORNO (opcional): retorno do período >= referência × (1 + meta)
-        meta_used = target_return is not None
-        meta_required = risk_free_rate * (1 + target_return) if meta_used else None
+        # META DE RETORNO (opcional), relativa ou absoluta (ver _meta_threshold)
+        meta_required, meta_mode = self._meta_threshold(target_return, target_annual, risk_free_rate)
+        meta_used = meta_required is not None
         if meta_used:
             constraints.append({
                 'type': 'ineq',
@@ -898,9 +930,12 @@ class PortfolioOptimizer:
                 out['degraded_message'] = " ".join(avisos)
             if meta_used:
                 out['meta_used'] = True
+                out['meta_mode'] = meta_mode          # 'relativa' ou 'absoluta'
                 out['meta_target'] = target_return
+                out['meta_annual'] = target_annual
                 out['meta_required'] = meta_required
                 out['meta_achieved'] = metrics['gv_final']
+                out['meta_achieved_annual'] = metrics['annual_return']
                 out['meta_ref'] = risk_free_rate
                 out['meta_atingida'] = metrics['gv_final'] >= meta_required - 1e-6
             return out

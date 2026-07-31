@@ -1168,19 +1168,43 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.use_meta = BoolVar(chk_meta)
         meta_l.addWidget(chk_meta)
 
-        meta_row = QHBoxLayout()
-        meta_row.addWidget(QLabel("Meta (% acima da referência):"))
+        # Tipo de meta: relativa à referência ou absoluta (% ao ano)
+        self.meta_mode_group = QButtonGroup(self)
+        self.meta_mode_var = RadioVar(default="relativa")
+
+        rel_row = QHBoxLayout()
+        rb_rel = QRadioButton("Relativa:")
+        self.meta_mode_group.addButton(rb_rel)
+        self.meta_mode_var.add("relativa", rb_rel)
+        rel_row.addWidget(rb_rel)
         self.meta_entry = QLineEdit()
-        self.meta_entry.setFixedWidth(80)
+        self.meta_entry.setFixedWidth(70)
         self.meta_var = NumVar(self.meta_entry, 5.0)
-        meta_row.addWidget(self.meta_entry)
-        meta_row.addStretch()
-        meta_l.addLayout(meta_row)
+        rel_row.addWidget(self.meta_entry)
+        rel_row.addWidget(QLabel("% acima da referência"))
+        rel_row.addStretch()
+        meta_l.addLayout(rel_row)
+
+        abs_row = QHBoxLayout()
+        rb_abs = QRadioButton("Absoluta:")
+        self.meta_mode_group.addButton(rb_abs)
+        self.meta_mode_var.add("absoluta", rb_abs)
+        abs_row.addWidget(rb_abs)
+        self.meta_abs_entry = QLineEdit()
+        self.meta_abs_entry.setFixedWidth(70)
+        self.meta_abs_var = NumVar(self.meta_abs_entry, 15.0)
+        abs_row.addWidget(self.meta_abs_entry)
+        abs_row.addWidget(QLabel("% ao ano (não depende da referência)"))
+        abs_row.addStretch()
+        meta_l.addLayout(abs_row)
 
         meta_hint = QLabel(
-            "Combina com o objetivo escolhido acima: maximiza o objetivo garantindo retorno "
-            "de PELO MENOS referência × (1 + meta/100) no período (ex.: referência 12% e meta "
-            "5% → alvo 12,6%). Na prática é o menor risco que alcança a meta. "
+            "Combina com o objetivo escolhido acima: maximiza o objetivo garantindo um retorno "
+            "mínimo. Na prática é o menor risco que alcança a meta.\n"
+            "• RELATIVA: alvo = referência × (1 + meta/100) no período "
+            "(ex.: referência 12% e meta 5% → alvo 12,6%). Exige taxa de referência.\n"
+            "• ABSOLUTA: meta em % ao ano, convertida para o período "
+            "(ex.: 15% ao ano em 126 pregões → alvo 7,2%). Funciona sem taxa de referência.\n"
             "Se a meta for inatingível, retorna a carteira de MAIOR retorno possível e avisa.")
         meta_hint.setStyleSheet("color: gray;")
         meta_hint.setWordWrap(True)
@@ -2531,8 +2555,16 @@ class PortfolioOptimizerGUI(QMainWindow):
             else:
                 risk_free_rate = self.risk_free_var.get() / 100
 
-            # Meta de retorno (opcional): excesso mínimo sobre a referência no período
-            target_return = self.meta_var.get() / 100 if self.use_meta.get() else None
+            # Meta de retorno (opcional), em um de dois modos:
+            #  - relativa: excesso mínimo sobre a referência no período
+            #  - absoluta: % ao ano, convertida no otimizador para o período
+            target_return = None
+            target_annual = None
+            if self.use_meta.get():
+                if self.meta_mode_var.get() == 'absoluta':
+                    target_annual = self.meta_abs_var.get() / 100
+                else:
+                    target_return = self.meta_var.get() / 100
 
             status_label.setText("Executando otimização...")
             QApplication.processEvents()
@@ -2544,6 +2576,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                     short_weights=short_weights,
                     objective_type=objective_type,
                     target_return=target_return,
+                    target_annual=target_annual,
                     max_weight=max_weight,
                     min_weight=min_weight,
                     risk_free_rate=risk_free_rate,
@@ -2553,6 +2586,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                 self.result = self.optimizer.optimize_portfolio(
                     objective_type=objective_type,
                     target_return=target_return,
+                    target_annual=target_annual,
                     max_weight=max_weight,
                     min_weight=min_weight,
                     risk_free_rate=risk_free_rate,
@@ -2592,15 +2626,26 @@ class PortfolioOptimizerGUI(QMainWindow):
         """Texto sobre o resultado da meta (vazio se meta não foi usada)."""
         if not self.result or not self.result.get('meta_used'):
             return ""
-        meta = self.result['meta_target'] * 100
-        ref = self.result['meta_ref'] * 100
         req = self.result['meta_required'] * 100
         ach = self.result['meta_achieved'] * 100
+
+        # Como o alvo do período foi obtido, conforme o modo escolhido
+        if self.result.get('meta_mode') == 'absoluta':
+            anual = (self.result.get('meta_annual') or 0) * 100
+            ach_anual = (self.result.get('meta_achieved_annual') or 0) * 100
+            origem = f"alvo = {anual:.1f}% ao ano → {req:.2f}% no período"
+            extra = f"\nRetorno anualizado obtido: {ach_anual:.2f}%."
+        else:
+            meta = (self.result.get('meta_target') or 0) * 100
+            ref = (self.result.get('meta_ref') or 0) * 100
+            origem = f"alvo = referência {ref:.2f}% × (1+{meta:.1f}%) = {req:.2f}%"
+            extra = ""
+
         if self.result.get('meta_atingida'):
             return (f"\n\n🎯 Meta atingida: retorno do período = {ach:.2f}% "
-                    f"(alvo = referência {ref:.2f}% × (1+{meta:.1f}%) = {req:.2f}%).")
+                    f"({origem}).{extra}")
         return (f"\n\n⚠️ Meta NÃO atingida com os limites atuais.\n"
-                f"Melhor possível: retorno = {ach:.2f}% (alvo = {req:.2f}%).")
+                f"Melhor possível: retorno = {ach:.2f}% ({origem}).{extra}")
 
     def display_results(self):
         if not self.result or not self.result['success']:
@@ -3279,7 +3324,16 @@ Isso ajuda a detectar:
         chk_auto_meta = QCheckBox("Exigir meta")
         self.use_auto_meta = BoolVar(chk_auto_meta)
         cfg_meta.addWidget(chk_auto_meta)
+
+        # Mesmos dois modos da aba Configuração
+        self.auto_meta_mode_group = QButtonGroup(self)
+        self.auto_meta_mode_var = RadioVar(default="relativa")
+
         meta_l2 = QHBoxLayout()
+        rb_auto_rel = QRadioButton("")
+        self.auto_meta_mode_group.addButton(rb_auto_rel)
+        self.auto_meta_mode_var.add("relativa", rb_auto_rel)
+        meta_l2.addWidget(rb_auto_rel)
         e_meta = QLineEdit()
         e_meta.setFixedWidth(50)
         self.auto_meta_var = NumVar(e_meta, 5)
@@ -3287,6 +3341,19 @@ Isso ajuda a detectar:
         meta_l2.addWidget(QLabel("% acima da ref."))
         meta_l2.addStretch()
         cfg_meta.addLayout(meta_l2)
+
+        meta_l3 = QHBoxLayout()
+        rb_auto_abs = QRadioButton("")
+        self.auto_meta_mode_group.addButton(rb_auto_abs)
+        self.auto_meta_mode_var.add("absoluta", rb_auto_abs)
+        meta_l3.addWidget(rb_auto_abs)
+        e_meta_abs = QLineEdit()
+        e_meta_abs.setFixedWidth(50)
+        self.auto_meta_abs_var = NumVar(e_meta_abs, 15)
+        meta_l3.addWidget(e_meta_abs)
+        meta_l3.addWidget(QLabel("% ao ano"))
+        meta_l3.addStretch()
+        cfg_meta.addLayout(meta_l3)
         config_l.addLayout(cfg_meta, 1)
 
         params_grid.addWidget(config_box, 2, 0, 1, 2)
@@ -3661,7 +3728,13 @@ Isso ajuda a detectar:
                         'weight_max': self.weight_max_var.get() / 100,
                         'use_shorts': self.use_auto_shorts.get() and len(self.auto_short_weights) > 0,
                         'short_weights': dict(self.auto_short_weights) if self.use_auto_shorts.get() else {},
-                        'target_return': (self.auto_meta_var.get() / 100) if self.use_auto_meta.get() else None,
+                        # Meta relativa OU absoluta, conforme o modo escolhido
+                        'target_return': ((self.auto_meta_var.get() / 100)
+                                          if self.use_auto_meta.get()
+                                          and self.auto_meta_mode_var.get() == 'relativa' else None),
+                        'target_annual': ((self.auto_meta_abs_var.get() / 100)
+                                          if self.use_auto_meta.get()
+                                          and self.auto_meta_mode_var.get() == 'absoluta' else None),
                         'desc': f"{otim_period}_{rebal_period}_{obj_key}"
                     }
                     configs.append(config)
@@ -3927,6 +4000,7 @@ Isso ajuda a detectar:
                 }
 
                 target_return = config.get('target_return')
+                target_annual = config.get('target_annual')
 
                 if use_shorts_step:
                     print(f"🔄 OTIMIZAÇÃO COM SHORTS ({len(short_assets)} ativos)")
@@ -3936,6 +4010,7 @@ Isso ajuda a detectar:
                         short_weights={a: short_weights_cfg[a] for a in short_assets},
                         objective_type=objective_map[config['objective']],
                         target_return=target_return,
+                        target_annual=target_annual,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
@@ -3946,6 +4021,7 @@ Isso ajuda a detectar:
                     self.result = self.optimizer.optimize_portfolio(
                         objective_type=objective_map[config['objective']],
                         target_return=target_return,
+                        target_annual=target_annual,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
