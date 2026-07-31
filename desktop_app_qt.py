@@ -4238,13 +4238,69 @@ Isso ajuda a detectar:
         self.auto_results_tree.setSortingEnabled(True)
         self.auto_results_tree.sortItems(0, Qt.AscendingOrder)
 
-    def _auto_results_rows(self):
+    # Especificação de exportação: (cabeçalho, tipo) por coluna, na ordem da tabela.
+    # tipo: 'text' | 'int' | 'float' | 'pctN' (fração; N = casas decimais ao exibir)
+    AUTO_EXPORT_SPEC = (
+        ('Rank', 'int'),
+        ('Otimização', 'text'),
+        ('Rebalanceamento', 'text'),
+        ('Objetivo', 'text'),
+        ('N_Ativos', 'int'),
+        ('Sharpe', 'float'),
+        ('Retorno(%)', 'pct1'),
+        ('Meta_OK(%)', 'pct0'),
+        ('Taxa_Ref(%)', 'pct1'),
+        ('Volatilidade(%)', 'pct1'),
+        ('VaR95%(diário)', 'pct2'),
+        ('Pos>Ref(%)', 'pct1'),
+        ('Pos_Abs(%)', 'pct1'),
+    )
+
+    def _auto_results_rows(self, pct_as_number=False):
+        """
+        Linhas da tabela como valores TIPADOS (números de verdade, não texto),
+        respeitando a ordenação atual da tabela.
+
+        Os números vêm de Qt.UserRole (guardado na criação das células), não do
+        texto exibido — assim a exportação não herda o "%" nem o separador
+        decimal da interface.
+
+        pct_as_number=False -> percentuais como fração (0.218); use com formato
+                               de célula percentual (Excel).
+        pct_as_number=True  -> percentuais já multiplicados (21.8); use em texto
+                               puro (CSV), onde não há formatação.
+        Células sem valor (Meta_OK "—") viram None (célula vazia).
+        """
+        spec = self.AUTO_EXPORT_SPEC
         rows = []
         for r in range(self.auto_results_tree.rowCount()):
             row = []
             for c in range(self.auto_results_tree.columnCount()):
                 item = self.auto_results_tree.item(r, c)
-                row.append(item.text() if item else "")
+                if item is None:
+                    row.append(None)
+                    continue
+                kind = spec[c][1] if c < len(spec) else 'text'
+                if kind == 'text':
+                    row.append(item.text())
+                    continue
+                # "—" marca ausência de valor (meta não utilizada)
+                if item.text().strip() in ('—', '-', ''):
+                    row.append(None)
+                    continue
+                key = item.data(Qt.UserRole)
+                if key is None:
+                    row.append(item.text())
+                elif kind == 'int':
+                    row.append(int(round(float(key))))
+                elif kind == 'float':
+                    row.append(round(float(key), 6))
+                else:
+                    # Arredondamento necessário: multiplicar a fração por 100
+                    # expõe o ruído binário (0.145*100 = 14.499999999999998).
+                    # 4 casas na escala percentual preservam toda a precisão útil.
+                    row.append(round(float(key) * 100, 4) if pct_as_number
+                               else round(float(key), 6))
             rows.append(row)
         return rows
 
@@ -4261,12 +4317,15 @@ Isso ajuda a detectar:
             )
 
             if filename:
-                columns = ['Rank', 'Otimização', 'Rebalanceamento', 'Objetivo',
-                           'N_Ativos', 'Sharpe', 'Retorno(%)', 'Meta_OK(%)', 'Taxa_Ref(%)',
-                           'Volatilidade(%)', 'VaR95%(diário)', 'Pos>Ref(%)', 'Pos_Abs(%)']
-                data = self._auto_results_rows()
+                columns = [h for h, _ in self.AUTO_EXPORT_SPEC]
+                # Percentuais já multiplicados: no CSV não há formato de célula,
+                # então "21,8" sob o cabeçalho "Retorno(%)" é o que faz sentido.
+                data = self._auto_results_rows(pct_as_number=True)
                 df = pd.DataFrame(data, columns=columns)
-                df.to_csv(filename, index=False, encoding='utf-8-sig')
+                # Padrão brasileiro: separador ";" e decimal "," — assim o Excel
+                # pt-BR abre o arquivo já com os números reconhecidos como número.
+                df.to_csv(filename, index=False, encoding='utf-8-sig',
+                          sep=';', decimal=',')
                 messagebox.showinfo("Sucesso", f"Resultados exportados para:\n{filename}")
 
         except Exception as e:
@@ -4285,16 +4344,45 @@ Isso ajuda a detectar:
             )
 
             if filename:
-                columns = ['Rank', 'Otimização', 'Rebalanceamento', 'Objetivo',
-                           'N_Ativos', 'Sharpe', 'Retorno(%)', 'Meta_OK(%)', 'Taxa_Ref(%)',
-                           'Volatilidade(%)', 'VaR95%(diário)', 'Pos>Ref(%)', 'Pos_Abs(%)']
-                data = self._auto_results_rows()
+                spec = self.AUTO_EXPORT_SPEC
+                columns = [h for h, _ in spec]
+                # Percentuais como FRAÇÃO: combinados com o formato de célula
+                # percentual abaixo, viram percentual nativo do Excel. O separador
+                # decimal passa a ser o do sistema (vírgula no Brasil).
+                data = self._auto_results_rows(pct_as_number=False)
                 df = pd.DataFrame(data, columns=columns)
+
+                # Formato de número por tipo de coluna
+                fmt_by_kind = {
+                    'int': '0',
+                    'float': '0.000',
+                    'pct0': '0%',
+                    'pct1': '0.0%',
+                    'pct2': '0.00%',
+                }
 
                 with pd.ExcelWriter(filename, engine='openpyxl') as writer:
                     df.to_excel(writer, sheet_name='Resultados Auto-Otimização', index=False)
 
                     worksheet = writer.sheets['Resultados Auto-Otimização']
+
+                    # Cabeçalho em negrito e centralizado
+                    from openpyxl.styles import Font, Alignment
+                    for cell in worksheet[1]:
+                        cell.font = Font(bold=True)
+                        cell.alignment = Alignment(horizontal='center')
+
+                    # Aplica o formato numérico e o alinhamento em cada coluna
+                    for idx, (_, kind) in enumerate(spec, start=1):
+                        number_format = fmt_by_kind.get(kind)
+                        letter = worksheet.cell(row=1, column=idx).column_letter
+                        for row_i in range(2, worksheet.max_row + 1):
+                            cell = worksheet.cell(row=row_i, column=idx)
+                            if number_format:
+                                cell.number_format = number_format
+                            cell.alignment = Alignment(horizontal='center')
+
+                    # Largura das colunas pelo conteúdo já formatado
                     for column in worksheet.columns:
                         max_length = 0
                         column_letter = column[0].column_letter
@@ -4304,8 +4392,12 @@ Isso ajuda a detectar:
                                     max_length = len(str(cell.value))
                             except Exception:
                                 pass
-                        adjusted_width = min(max_length + 2, 30)
+                        adjusted_width = min(max_length + 3, 30)
                         worksheet.column_dimensions[column_letter].width = adjusted_width
+
+                    # Congela o cabeçalho e liga o autofiltro
+                    worksheet.freeze_panes = 'A2'
+                    worksheet.auto_filter.ref = worksheet.dimensions
 
                 messagebox.showinfo("Sucesso", f"Resultados exportados para:\n{filename}")
 
