@@ -565,6 +565,20 @@ class _AutoSignals(QObject):
     finished = pyqtSignal()
 
 
+class _SortableItem(QTableWidgetItem):
+    """Item de tabela que ordena numericamente quando há uma chave numérica
+    armazenada em Qt.UserRole; caso contrário, ordena como texto."""
+    def __lt__(self, other):
+        a = self.data(Qt.UserRole)
+        b = other.data(Qt.UserRole)
+        if a is not None and b is not None:
+            try:
+                return float(a) < float(b)
+            except (TypeError, ValueError):
+                pass
+        return self.text() < other.text()
+
+
 # =============================================================================
 # JANELA PRINCIPAL
 # =============================================================================
@@ -590,6 +604,7 @@ class PortfolioOptimizerGUI(QMainWindow):
         # Variáveis para short selling
         self.short_weights = {}
         self.short_widgets = {}
+        self.auto_short_weights = {}   # shorts fixos da Auto-Otimização
 
         # Tabelas mensais
         self.monthly_table = None
@@ -1103,11 +1118,14 @@ class PortfolioOptimizerGUI(QMainWindow):
             "Maximizar Sharpe Ratio",
             "Maximizar Sortino Ratio",
             "Minimizar Risco",
-            "Maximizar Inclinação",
+            "Minimizar Under Water",
             "Maximizar Inclinação/[(1-R²)×Vol]",
             "Maximizar Qualidade da Linearidade"
         ]
-        self.risk_free_objectives = ["Maximizar Linearidade do Excesso"]
+        self.risk_free_objectives = [
+            "Maximizar Linearidade do Excesso",
+            "Maximizar Sharpe do Excesso"
+        ]
 
         self.objective_buttons = {}
         for obj in self.base_objectives:
@@ -1150,19 +1168,43 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.use_meta = BoolVar(chk_meta)
         meta_l.addWidget(chk_meta)
 
-        meta_row = QHBoxLayout()
-        meta_row.addWidget(QLabel("Meta (% acima da referência):"))
+        # Tipo de meta: relativa à referência ou absoluta (% ao ano)
+        self.meta_mode_group = QButtonGroup(self)
+        self.meta_mode_var = RadioVar(default="relativa")
+
+        rel_row = QHBoxLayout()
+        rb_rel = QRadioButton("Relativa:")
+        self.meta_mode_group.addButton(rb_rel)
+        self.meta_mode_var.add("relativa", rb_rel)
+        rel_row.addWidget(rb_rel)
         self.meta_entry = QLineEdit()
-        self.meta_entry.setFixedWidth(80)
+        self.meta_entry.setFixedWidth(70)
         self.meta_var = NumVar(self.meta_entry, 5.0)
-        meta_row.addWidget(self.meta_entry)
-        meta_row.addStretch()
-        meta_l.addLayout(meta_row)
+        rel_row.addWidget(self.meta_entry)
+        rel_row.addWidget(QLabel("% acima da referência"))
+        rel_row.addStretch()
+        meta_l.addLayout(rel_row)
+
+        abs_row = QHBoxLayout()
+        rb_abs = QRadioButton("Absoluta:")
+        self.meta_mode_group.addButton(rb_abs)
+        self.meta_mode_var.add("absoluta", rb_abs)
+        abs_row.addWidget(rb_abs)
+        self.meta_abs_entry = QLineEdit()
+        self.meta_abs_entry.setFixedWidth(70)
+        self.meta_abs_var = NumVar(self.meta_abs_entry, 15.0)
+        abs_row.addWidget(self.meta_abs_entry)
+        abs_row.addWidget(QLabel("% ao ano (não depende da referência)"))
+        abs_row.addStretch()
+        meta_l.addLayout(abs_row)
 
         meta_hint = QLabel(
-            "Combina com o objetivo escolhido acima: maximiza o objetivo garantindo retorno "
-            "de PELO MENOS referência × (1 + meta/100) no período (ex.: referência 12% e meta "
-            "5% → alvo 12,6%). Na prática é o menor risco que alcança a meta. "
+            "Combina com o objetivo escolhido acima: maximiza o objetivo garantindo um retorno "
+            "mínimo. Na prática é o menor risco que alcança a meta.\n"
+            "• RELATIVA: alvo = referência × (1 + meta/100) no período "
+            "(ex.: referência 12% e meta 5% → alvo 12,6%). Exige taxa de referência.\n"
+            "• ABSOLUTA: meta em % ao ano, convertida para o período "
+            "(ex.: 15% ao ano em 126 pregões → alvo 7,2%). Funciona sem taxa de referência.\n"
             "Se a meta for inatingível, retorna a carteira de MAIOR retorno possível e avisa.")
         meta_hint.setStyleSheet("color: gray;")
         meta_hint.setWordWrap(True)
@@ -1846,7 +1888,7 @@ class PortfolioOptimizerGUI(QMainWindow):
             {'Métrica': 'Taxa de Referência', 'Valor': metrics['risk_free_rate'], 'Formato': f"{metrics['risk_free_rate']:.4f}"},
         ]
 
-        if self.objective_var.get() == "Maximizar Linearidade do Excesso" and metrics.get('excess_r_squared') is not None:
+        if self.objective_var.get() in ("Maximizar Linearidade do Excesso", "Maximizar Sharpe do Excesso") and metrics.get('excess_r_squared') is not None:
             if hasattr(self.optimizer, 'risk_free_returns') and self.optimizer.risk_free_returns is not None:
                 excess_returns_daily = metrics['portfolio_returns_daily'] - self.optimizer.risk_free_returns.values
                 excess_vol = np.std(excess_returns_daily, ddof=0) * np.sqrt(252)
@@ -2497,10 +2539,11 @@ class PortfolioOptimizerGUI(QMainWindow):
                 "Maximizar Sharpe Ratio": 'sharpe',
                 "Maximizar Sortino Ratio": 'sortino',
                 "Minimizar Risco": 'volatility',
-                "Maximizar Inclinação": 'slope',
+                "Minimizar Under Water": 'under_water',
                 "Maximizar Inclinação/[(1-R²)×Vol]": 'hc10',
                 "Maximizar Qualidade da Linearidade": 'quality_linear',
-                "Maximizar Linearidade do Excesso": 'excess_hc10'
+                "Maximizar Linearidade do Excesso": 'excess_hc10',
+                "Maximizar Sharpe do Excesso": 'excess_sharpe'
             }
 
             objective_type = objective_map[self.objective_var.get()]
@@ -2512,8 +2555,16 @@ class PortfolioOptimizerGUI(QMainWindow):
             else:
                 risk_free_rate = self.risk_free_var.get() / 100
 
-            # Meta de retorno (opcional): excesso mínimo sobre a referência no período
-            target_return = self.meta_var.get() / 100 if self.use_meta.get() else None
+            # Meta de retorno (opcional), em um de dois modos:
+            #  - relativa: excesso mínimo sobre a referência no período
+            #  - absoluta: % ao ano, convertida no otimizador para o período
+            target_return = None
+            target_annual = None
+            if self.use_meta.get():
+                if self.meta_mode_var.get() == 'absoluta':
+                    target_annual = self.meta_abs_var.get() / 100
+                else:
+                    target_return = self.meta_var.get() / 100
 
             status_label.setText("Executando otimização...")
             QApplication.processEvents()
@@ -2525,6 +2576,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                     short_weights=short_weights,
                     objective_type=objective_type,
                     target_return=target_return,
+                    target_annual=target_annual,
                     max_weight=max_weight,
                     min_weight=min_weight,
                     risk_free_rate=risk_free_rate,
@@ -2534,6 +2586,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                 self.result = self.optimizer.optimize_portfolio(
                     objective_type=objective_type,
                     target_return=target_return,
+                    target_annual=target_annual,
                     max_weight=max_weight,
                     min_weight=min_weight,
                     risk_free_rate=risk_free_rate,
@@ -2550,7 +2603,16 @@ class PortfolioOptimizerGUI(QMainWindow):
                     self.export_csv_btn.setEnabled(True)
                 if self.export_excel_btn is not None:
                     self.export_excel_btn.setEnabled(True)
-                messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!" + self._meta_message())
+                if self.result.get('degraded'):
+                    # Degradação graciosa: houve resultado, mas com ressalvas
+                    messagebox.showwarning(
+                        "Otimização concluída com ressalvas",
+                        "⚠️ Otimização concluída, mas SEM convergência plena.\n\n"
+                        f"{self.result['degraded_message']}"
+                        + self._meta_message()
+                    )
+                else:
+                    messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!" + self._meta_message())
                 self.notebook.setCurrentWidget(self.tab_results)
             else:
                 messagebox.showerror("Erro", f"❌ {self.result['message']}")
@@ -2564,15 +2626,26 @@ class PortfolioOptimizerGUI(QMainWindow):
         """Texto sobre o resultado da meta (vazio se meta não foi usada)."""
         if not self.result or not self.result.get('meta_used'):
             return ""
-        meta = self.result['meta_target'] * 100
-        ref = self.result['meta_ref'] * 100
         req = self.result['meta_required'] * 100
         ach = self.result['meta_achieved'] * 100
+
+        # Como o alvo do período foi obtido, conforme o modo escolhido
+        if self.result.get('meta_mode') == 'absoluta':
+            anual = (self.result.get('meta_annual') or 0) * 100
+            ach_anual = (self.result.get('meta_achieved_annual') or 0) * 100
+            origem = f"alvo = {anual:.1f}% ao ano → {req:.2f}% no período"
+            extra = f"\nRetorno anualizado obtido: {ach_anual:.2f}%."
+        else:
+            meta = (self.result.get('meta_target') or 0) * 100
+            ref = (self.result.get('meta_ref') or 0) * 100
+            origem = f"alvo = referência {ref:.2f}% × (1+{meta:.1f}%) = {req:.2f}%"
+            extra = ""
+
         if self.result.get('meta_atingida'):
             return (f"\n\n🎯 Meta atingida: retorno do período = {ach:.2f}% "
-                    f"(alvo = referência {ref:.2f}% × (1+{meta:.1f}%) = {req:.2f}%).")
+                    f"({origem}).{extra}")
         return (f"\n\n⚠️ Meta NÃO atingida com os limites atuais.\n"
-                f"Melhor possível: retorno = {ach:.2f}% (alvo = {req:.2f}%).")
+                f"Melhor possível: retorno = {ach:.2f}% ({origem}).{extra}")
 
     def display_results(self):
         if not self.result or not self.result['success']:
@@ -2599,6 +2672,9 @@ class PortfolioOptimizerGUI(QMainWindow):
         risk_free_annual = (1 + metrics['risk_free_rate']) ** (365 / n_dias_otim) - 1
         sharpe_corrected = (metrics['annual_return'] - risk_free_annual) / metrics['volatility']
 
+        excess_annual_in = metrics['annual_return'] - risk_free_annual
+        ratio_in = f"{excess_annual_in / risk_free_annual * 100:.1f}%" if risk_free_annual != 0 else "n/d"
+
         in_sample_text = f"""🎯 RETORNOS:
   • Total: {metrics['gv_final']:.2%}
   • Anualizado: {metrics['annual_return']:.2%}
@@ -2618,6 +2694,8 @@ class PortfolioOptimizerGUI(QMainWindow):
   • Taxa Ref Período: {metrics['risk_free_rate']:.2%}
   • Taxa Ref Anualizada: {risk_free_annual*100:.2f}
   • Excesso Período: {metrics['excess_return']:.2%}
+  • Excesso Anualizado: {excess_annual_in:.2%}
+  • Excesso/Ref: {ratio_in}
 
 📅 PERÍODO:
   • Dias: {n_dias_otim}"""
@@ -2708,6 +2786,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                         var_95_daily_valid = mean_daily_return - 1.65 * std_daily_return
 
                         excess_return_valid = annual_return_valid - risk_free_annual_valid
+                        ratio_valid = f"{excess_return_valid / risk_free_annual_valid * 100:.1f}%" if risk_free_annual_valid != 0 else "n/d"
 
                         out_sample_text = f"""🎯 RETORNOS:
   • Total: {retorno_total_valid:.2%}
@@ -2723,6 +2802,7 @@ class PortfolioOptimizerGUI(QMainWindow):
 🛡️ REFERÊNCIA:
   • Taxa Ref Anualizada: {risk_free_annual_valid:.2%}
   • Excesso Anualizado: {excess_return_valid:.2%}
+  • Excesso/Ref: {ratio_valid}
 
 📅 PERÍODO:
   • Dias: {n_dias_valid}"""
@@ -3097,8 +3177,8 @@ Isso ajuda a detectar:
 
         left = QVBoxLayout()
         right = QVBoxLayout()
-        content_l.addLayout(left, 1)   # metade esquerda: parâmetros
-        content_l.addLayout(right, 1)  # metade direita: estimativa + resultados
+        content_l.addLayout(left, 45)   # 45% esquerda: parâmetros
+        content_l.addLayout(right, 55)  # 55% direita: estimativa + tabela de 13 colunas
 
         # Grid de parâmetros (linhas 0/1 expandem; conteúdo ancorado no topo-esquerda)
         params_grid = QGridLayout()
@@ -3152,11 +3232,16 @@ Isso ajuda a detectar:
         obj_l = QVBoxLayout(obj_box)
         self.objectives = {}
         obj_labels = {'sharpe': 'Maximizar Sharpe', 'sortino': 'Maximizar Sortino',
-                      'volatility': 'Minimizar Risco', 'hc10': 'Maximizar Inc/[(1-R²)×Vol]',
+                      'volatility': 'Minimizar Risco',
+                      'under_water': 'Minimizar Under Water',
+                      'hc10': 'Maximizar Inc/[(1-R²)×Vol]',
                       'quality_linear': 'Qualidade da Linearidade',
-                      'excess_hc10': 'Linearidade do Excesso'}
-        for key, default in [('sharpe', True), ('sortino', False), ('volatility', False),
-                             ('hc10', False), ('quality_linear', False), ('excess_hc10', False)]:
+                      'excess_hc10': 'Linearidade do Excesso',
+                      'excess_sharpe': 'Sharpe do Excesso'}
+        for key, default in [('sharpe', True), ('sortino', False),
+                             ('volatility', False), ('under_water', False),
+                             ('hc10', False), ('quality_linear', False),
+                             ('excess_hc10', False), ('excess_sharpe', False)]:
             cb = QCheckBox(obj_labels[key])
             cb.setChecked(default)
             obj_l.addWidget(cb)
@@ -3173,19 +3258,15 @@ Isso ajuda a detectar:
         short_l.addWidget(chk_short)
 
         self.auto_shorts_config = QWidget()
-        asc_l = QGridLayout(self.auto_shorts_config)
+        asc_l = QVBoxLayout(self.auto_shorts_config)
         asc_l.setContentsMargins(0, 0, 0, 0)
-        asc_l.setColumnStretch(2, 1)  # mantém rótulo/campo à esquerda
-        asc_l.addWidget(QLabel("Ativo:"), 0, 0)
-        e_short_asset = QLineEdit("BOVA11")
-        e_short_asset.setFixedWidth(90)
-        self.short_asset_var = StrVar(e_short_asset)
-        asc_l.addWidget(e_short_asset, 0, 1)
-        asc_l.addWidget(QLabel("Peso (%):"), 1, 0)
-        e_short_weight = QLineEdit()
-        e_short_weight.setFixedWidth(90)
-        self.short_weight_var = NumVar(e_short_weight, -100.0)
-        asc_l.addWidget(e_short_weight, 1, 1)
+        btn_auto_short = QPushButton("📋 Selecionar Ativos para Short")
+        btn_auto_short.clicked.connect(self.open_auto_short_selection_window)
+        asc_l.addWidget(btn_auto_short)
+        self.auto_short_summary = QLabel("Nenhum ativo short configurado")
+        self.auto_short_summary.setWordWrap(True)
+        self.auto_short_summary.setStyleSheet("color: gray;")
+        asc_l.addWidget(self.auto_short_summary)
         short_l.addWidget(self.auto_shorts_config)
         short_l.addStretch()
         self.auto_shorts_config.setEnabled(False)
@@ -3243,7 +3324,16 @@ Isso ajuda a detectar:
         chk_auto_meta = QCheckBox("Exigir meta")
         self.use_auto_meta = BoolVar(chk_auto_meta)
         cfg_meta.addWidget(chk_auto_meta)
+
+        # Mesmos dois modos da aba Configuração
+        self.auto_meta_mode_group = QButtonGroup(self)
+        self.auto_meta_mode_var = RadioVar(default="relativa")
+
         meta_l2 = QHBoxLayout()
+        rb_auto_rel = QRadioButton("")
+        self.auto_meta_mode_group.addButton(rb_auto_rel)
+        self.auto_meta_mode_var.add("relativa", rb_auto_rel)
+        meta_l2.addWidget(rb_auto_rel)
         e_meta = QLineEdit()
         e_meta.setFixedWidth(50)
         self.auto_meta_var = NumVar(e_meta, 5)
@@ -3251,6 +3341,19 @@ Isso ajuda a detectar:
         meta_l2.addWidget(QLabel("% acima da ref."))
         meta_l2.addStretch()
         cfg_meta.addLayout(meta_l2)
+
+        meta_l3 = QHBoxLayout()
+        rb_auto_abs = QRadioButton("")
+        self.auto_meta_mode_group.addButton(rb_auto_abs)
+        self.auto_meta_mode_var.add("absoluta", rb_auto_abs)
+        meta_l3.addWidget(rb_auto_abs)
+        e_meta_abs = QLineEdit()
+        e_meta_abs.setFixedWidth(50)
+        self.auto_meta_abs_var = NumVar(e_meta_abs, 15)
+        meta_l3.addWidget(e_meta_abs)
+        meta_l3.addWidget(QLabel("% ao ano"))
+        meta_l3.addStretch()
+        cfg_meta.addLayout(meta_l3)
         config_l.addLayout(cfg_meta, 1)
 
         params_grid.addWidget(config_box, 2, 0, 1, 2)
@@ -3285,19 +3388,178 @@ Isso ajuda a detectar:
         export_l.addStretch()
         res_l.addLayout(export_l)
 
-        columns = ('Rank', 'Otim', 'Rebal/Aval', 'Obj', 'N_Ativos', 'Sharpe',
-                   'Ret%', 'TxRef%', 'Vol%', 'Pos%')
+        # Cabeçalhos curtos de propósito: com 13 colunas, títulos longos são o que
+        # estoura a largura (as células em si são curtas). O significado completo
+        # de cada um fica no tooltip do cabeçalho.
+        columns = ('#', 'Otimização', 'Rebalanc.', 'Objetivo', 'N_Ativos', 'Sharpe',
+                   'Ret%', 'Meta%', 'Ref%', 'Vol%', 'VaR%', '>Ref%', '>0%')
         self.auto_results_columns = columns
         self.auto_results_tree = QTableWidget(0, len(columns))
         self.auto_results_tree.setHorizontalHeaderLabels(columns)
-        self.auto_results_tree.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        _tips = {
+            '#': 'Posição no ranking (ordenado por Sharpe out-of-sample)',
+            'Otimização': 'Janela de otimização (in-sample) usada em cada step',
+            'Rebalanc.': 'Frequência de rebalanceamento = período de avaliação de cada step',
+            'Objetivo': 'Objetivo de otimização usado',
+            'N_Ativos': 'Número médio de ativos na carteira por step',
+            'Sharpe': 'Sharpe médio obtido FORA da amostra (validação)',
+            'Ret%': 'Retorno anualizado obtido FORA da amostra (validação)',
+            'Meta%': '% dos steps que cumpriram a Meta DENTRO da janela de otimização.\n'
+                     '100% com Ret% abaixo do alvo = meta batida in-sample que não se\n'
+                     'sustentou fora da amostra (restrição sem folga).\n'
+                     'Abaixo de 100% = alvo inatingível em alguns steps, valendo o\n'
+                     'fallback de maior retorno possível.\n'
+                     '"—" = meta não utilizada.',
+            'Ref%': 'Taxa de referência anualizada do período',
+            'Vol%': 'Volatilidade anualizada',
+            'VaR%': 'VaR 95% diário médio dos steps (risco de cauda)',
+            '>Ref%': '% de steps cujo retorno superou a taxa de referência do período',
+            '>0%': '% de steps com retorno absoluto positivo',
+        }
+        for _c, _name in enumerate(columns):
+            if _name in _tips:
+                self.auto_results_tree.horizontalHeaderItem(_c).setToolTip(_tips[_name])
+        _auto_header = self.auto_results_tree.horizontalHeader()
+        _auto_header.setSectionResizeMode(QHeaderView.ResizeToContents)  # colunas ajustam ao conteúdo
         self.auto_results_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.auto_results_tree.setSortingEnabled(True)                   # ordenável ao clicar no cabeçalho
         res_l.addWidget(self.auto_results_tree, 1)
 
         right.addWidget(results_box, 1)
 
     def toggle_auto_shorts(self):
         self.auto_shorts_config.setEnabled(self.use_auto_shorts.get())
+
+    def update_auto_short_summary(self):
+        if not self.auto_short_weights:
+            self.auto_short_summary.setText("Nenhum ativo short configurado")
+            self.auto_short_summary.setStyleSheet("color: gray;")
+            return
+        linhas = [f"📉 {a}: {w*100:.1f}%" for a, w in self.auto_short_weights.items()]
+        total = sum(self.auto_short_weights.values()) * 100
+        self.auto_short_summary.setText("\n".join(linhas) + f"\nTotal Short: {total:.1f}%")
+        self.auto_short_summary.setStyleSheet("")
+
+    def open_auto_short_selection_window(self):
+        """Selecionar vários ativos short (fixos) para a Auto-Otimização."""
+        available_assets = list(self.assets_listbox.get(0, END))
+        if not available_assets:
+            messagebox.showerror("Erro", "Carregue os dados primeiro (aba Dados)!")
+            return
+
+        popup = QDialog(self)
+        popup.setWindowTitle("Configuração de Ativos Short - Auto-Otimização")
+        popup.resize(600, 700)
+        popup.setModal(True)
+        main_l = QVBoxLayout(popup)
+
+        lbl = QLabel("Selecione os ativos short (peso fixo, aplicado a cada step):")
+        lbl.setFont(bold(12))
+        main_l.addWidget(lbl)
+
+        search_l = QHBoxLayout()
+        search_l.addWidget(QLabel("🔍 Buscar:"))
+        search_entry = QLineEdit()
+        search_l.addWidget(search_entry)
+        main_l.addLayout(search_l)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll.setWidget(scroll_content)
+        main_l.addWidget(scroll, 1)
+
+        asset_widgets = {}
+
+        def toggle_asset_weight(asset):
+            if asset in asset_widgets:
+                w = asset_widgets[asset]
+                w['weight_entry'].setEnabled(w['use_var'].get())
+
+        def create_asset_widgets():
+            _clear_layout(scroll_layout)
+            asset_widgets.clear()
+            term = search_entry.text().lower()
+            filtered = [a for a in available_assets if term in a.lower()]
+            for asset in filtered:
+                row = QHBoxLayout()
+                chk = QCheckBox(asset)
+                chk.setChecked(asset in self.auto_short_weights)
+                use_var = BoolVar(chk)
+                row.addWidget(chk)
+                row.addStretch()
+                row.addWidget(QLabel("Peso (%):"))
+                e_w = QLineEdit()
+                e_w.setFixedWidth(80)
+                initial = self.auto_short_weights.get(asset, -1.0) * 100
+                weight_var = NumVar(e_w, initial)
+                row.addWidget(e_w)
+                e_w.setEnabled(chk.isChecked())
+                chk.toggled.connect(lambda _c, a=asset: toggle_asset_weight(a))
+                scroll_layout.addLayout(row)
+                asset_widgets[asset] = {'use_var': use_var, 'weight_var': weight_var, 'weight_entry': e_w}
+            scroll_layout.addStretch()
+
+        search_entry.textChanged.connect(create_asset_widgets)
+        create_asset_widgets()
+
+        quick_box = QGroupBox("Ações Rápidas")
+        quick_l = QHBoxLayout(quick_box)
+
+        def select_all(select):
+            for a, w in asset_widgets.items():
+                w['use_var'].set(select)
+                toggle_asset_weight(a)
+
+        def apply_default_weight():
+            dw = default_weight_var.get()
+            for a, w in asset_widgets.items():
+                if w['use_var'].get():
+                    w['weight_var'].set(dw)
+
+        b_all = QPushButton("Selecionar Todos")
+        b_all.clicked.connect(lambda: select_all(True))
+        quick_l.addWidget(b_all)
+        b_clear = QPushButton("Limpar Todos")
+        b_clear.clicked.connect(lambda: select_all(False))
+        quick_l.addWidget(b_clear)
+        quick_l.addWidget(QLabel("Peso padrão:"))
+        e_dw = QLineEdit()
+        e_dw.setFixedWidth(80)
+        default_weight_var = NumVar(e_dw, -10.0)
+        quick_l.addWidget(e_dw)
+        b_apply_dw = QPushButton("Aplicar aos Selecionados")
+        b_apply_dw.clicked.connect(apply_default_weight)
+        quick_l.addWidget(b_apply_dw)
+        main_l.addWidget(quick_box)
+
+        def apply_configuration():
+            new_weights = {}
+            for asset, w in asset_widgets.items():
+                if w['use_var'].get():
+                    weight = w['weight_var'].get() / 100
+                    if weight >= 0:
+                        messagebox.showerror("Erro", f"Peso short deve ser negativo para {asset}!")
+                        return
+                    new_weights[asset] = weight
+            self.auto_short_weights = new_weights
+            self.update_auto_short_summary()
+            popup.accept()
+            messagebox.showinfo("Sucesso", f"Configurados {len(new_weights)} ativos short!")
+
+        btn_l = QHBoxLayout()
+        btn_l.addStretch()
+        b_cancel = QPushButton("❌ Cancelar")
+        b_cancel.clicked.connect(popup.reject)
+        btn_l.addWidget(b_cancel)
+        b_ok = QPushButton("✅ Aplicar Configuração")
+        b_ok.clicked.connect(apply_configuration)
+        btn_l.addWidget(b_ok)
+        main_l.addLayout(btn_l)
+
+        popup.exec_()
 
     # ========== MÉTODOS DE CONTROLE ==========
 
@@ -3359,26 +3621,11 @@ Isso ajuda a detectar:
             total_configs = otim_count * rebal_count * obj_count
             total_tests = total_steps_estimado * obj_count
 
-            if total_steps_estimado > 100:
-                time_factor = 0.8
-            else:
-                time_factor = 0.95
-
-            estimated_time = total_tests * time_factor
-
-            if estimated_time < 60:
-                time_str = f"{estimated_time:.0f} segundos"
-            elif estimated_time < 3600:
-                time_str = f"{estimated_time/60:.1f} minutos"
-            else:
-                time_str = f"{estimated_time/3600:.1f} horas"
-
             avg_steps = total_steps_estimado / (otim_count * rebal_count) if (otim_count * rebal_count) > 0 else 0
 
             self.estimate_label.setText(
                 f"📊 {total_configs} configurações\n"
                 f"⚡ ~{total_tests:,} testes\n"
-                f"⏱️ ~{time_str}\n"
                 f"📅 {total_calendar_days} dias\n"
                 f"📈 ~{avg_steps:.0f} steps/config"
             )
@@ -3463,8 +3710,10 @@ Isso ajuda a detectar:
         selected_rebal = [period for period, var in self.rebalance_periods.items() if var.get()]
         selected_obj = [obj for obj, var in self.objectives.items() if var.get()]
 
-        obj_mapping = {'sharpe': 'sharpe', 'sortino': 'sortino', 'volatility': 'volatility',
-                       'hc10': 'hc10', 'quality_linear': 'quality_linear', 'excess_hc10': 'excess_hc10'}
+        obj_mapping = {'sharpe': 'sharpe', 'sortino': 'sortino',
+                       'volatility': 'volatility', 'under_water': 'under_water',
+                       'hc10': 'hc10', 'quality_linear': 'quality_linear',
+                       'excess_hc10': 'excess_hc10', 'excess_sharpe': 'excess_sharpe'}
 
         for otim_period in selected_otim:
             for rebal_period in selected_rebal:
@@ -3477,10 +3726,15 @@ Isso ajuda a detectar:
                         'rank_max': self.rank_max_var.get(),
                         'weight_min': self.weight_min_var.get() / 100,
                         'weight_max': self.weight_max_var.get() / 100,
-                        'use_shorts': self.use_auto_shorts.get(),
-                        'short_asset': self.short_asset_var.get() if self.use_auto_shorts.get() else None,
-                        'short_weight': self.short_weight_var.get() / 100 if self.use_auto_shorts.get() else 0,
-                        'target_return': (self.auto_meta_var.get() / 100) if self.use_auto_meta.get() else None,
+                        'use_shorts': self.use_auto_shorts.get() and len(self.auto_short_weights) > 0,
+                        'short_weights': dict(self.auto_short_weights) if self.use_auto_shorts.get() else {},
+                        # Meta relativa OU absoluta, conforme o modo escolhido
+                        'target_return': ((self.auto_meta_var.get() / 100)
+                                          if self.use_auto_meta.get()
+                                          and self.auto_meta_mode_var.get() == 'relativa' else None),
+                        'target_annual': ((self.auto_meta_abs_var.get() / 100)
+                                          if self.use_auto_meta.get()
+                                          and self.auto_meta_mode_var.get() == 'absoluta' else None),
                         'desc': f"{otim_period}_{rebal_period}_{obj_key}"
                     }
                     configs.append(config)
@@ -3717,15 +3971,20 @@ Isso ajuda a detectar:
             try:
                 self.df = df_otim.copy()
 
-                if config['use_shorts'] and config['short_asset']:
-                    if config['short_asset'] not in df_otim.columns:
-                        print(f"❌ Ativo short '{config['short_asset']}' não encontrado")
-                        return None
-                    all_assets = selected_assets + [config['short_asset']]
+                # Shorts fixos configurados (podem ser vários), disponíveis neste período
+                short_weights_cfg = config.get('short_weights', {})
+                short_assets = [a for a in short_weights_cfg if a in df_otim.columns]
+                # Um ativo não pode ser long (via ranking) e short ao mesmo tempo
+                if short_assets:
+                    selected_assets = [a for a in selected_assets if a not in short_assets]
+                use_shorts_step = bool(config['use_shorts'] and short_assets and len(selected_assets) >= 1)
+
+                if use_shorts_step:
+                    all_assets = selected_assets + short_assets
                 else:
                     all_assets = selected_assets
 
-                self.optimizer = PortfolioOptimizer(self.df, all_assets if config['use_shorts'] else selected_assets)
+                self.optimizer = PortfolioOptimizer(self.df, all_assets)
 
                 if hasattr(self.optimizer, 'risk_free_rate_total'):
                     risk_free_rate = self.optimizer.risk_free_rate_total
@@ -3734,20 +3993,24 @@ Isso ajuda a detectar:
                     risk_free_rate = 0.0
 
                 objective_map = {
-                    'sharpe': 'sharpe', 'sortino': 'sortino', 'volatility': 'volatility',
-                    'hc10': 'hc10', 'quality_linear': 'quality_linear', 'excess_hc10': 'excess_hc10'
+                    'sharpe': 'sharpe', 'sortino': 'sortino',
+                    'volatility': 'volatility', 'under_water': 'under_water',
+                    'hc10': 'hc10', 'quality_linear': 'quality_linear',
+                    'excess_hc10': 'excess_hc10', 'excess_sharpe': 'excess_sharpe'
                 }
 
                 target_return = config.get('target_return')
+                target_annual = config.get('target_annual')
 
-                if config['use_shorts'] and config['short_asset']:
-                    print(f"🔄 OTIMIZAÇÃO COM SHORTS")
+                if use_shorts_step:
+                    print(f"🔄 OTIMIZAÇÃO COM SHORTS ({len(short_assets)} ativos)")
                     self.result = self.optimizer.optimize_portfolio_with_shorts(
                         selected_assets=selected_assets,
-                        short_assets=[config['short_asset']],
-                        short_weights={config['short_asset']: config['short_weight']},
+                        short_assets=short_assets,
+                        short_weights={a: short_weights_cfg[a] for a in short_assets},
                         objective_type=objective_map[config['objective']],
                         target_return=target_return,
+                        target_annual=target_annual,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
@@ -3758,6 +4021,7 @@ Isso ajuda a detectar:
                     self.result = self.optimizer.optimize_portfolio(
                         objective_type=objective_map[config['objective']],
                         target_return=target_return,
+                        target_annual=target_annual,
                         max_weight=config['weight_max'],
                         min_weight=config['weight_min'],
                         risk_free_rate=risk_free_rate,
@@ -3767,6 +4031,19 @@ Isso ajuda a detectar:
                 if not self.result['success']:
                     print(f"❌ Otimização falhou: {self.result.get('message', 'Erro desconhecido')}")
                     return None
+
+                if self.result.get('degraded'):
+                    # Degradação graciosa: o step segue, mas fica registrado no log
+                    print(f"⚠️ ATENÇÃO: {self.result['degraded_message']}")
+
+                # A meta é exigida DENTRO da janela de otimização (in-sample).
+                # Guardamos aqui se ela foi cumprida neste step, para depois medir
+                # quantos steps de fato bateram o alvo — o que separa "não atingiu
+                # porque era inatingível" de "atingiu mas não se sustentou fora
+                # da amostra". None = meta não estava em uso.
+                meta_ok_step = self.result.get('meta_atingida') if self.result.get('meta_used') else None
+                if meta_ok_step is False:
+                    print(f"⚠️ Meta NÃO atingida neste step (alvo in-sample não alcançável)")
 
                 optimized_weights = self.result['weights']
                 optimized_assets = self.result['assets']
@@ -3909,7 +4186,8 @@ Isso ajuda a detectar:
                     'risk_free_period': taxa_periodo_valid,
                     'excess_annual': excesso_anual_valid,
                     'var_95': var_95_daily_valid,
-                    'n_days': n_dias_corridos_valid
+                    'n_days': n_dias_corridos_valid,
+                    'meta_atingida': meta_ok_step
                 }
 
             finally:
@@ -3932,10 +4210,40 @@ Isso ajuda a detectar:
                                      retorno_total, dias_totais):
         avg_metrics = {}
 
-        for metric in ['n_assets', 'positive_return_pct']:
-            values = [step[metric] for step in step_metrics
-                      if metric in step and step[metric] is not None]
-            avg_metrics[metric] = sum(values) / len(values) if values else 0
+        values = [step['n_assets'] for step in step_metrics
+                  if 'n_assets' in step and step['n_assets'] is not None]
+        avg_metrics['n_assets'] = sum(values) / len(values) if values else 0
+
+        # VaR 95% diário médio dos steps (risco de cauda)
+        var_values = [step['var_95'] for step in step_metrics
+                      if step.get('var_95') is not None]
+        avg_metrics['var_95'] = sum(var_values) / len(var_values) if var_values else 0
+
+        # % de PERÍODOS (steps) com resultado positivo — não por dia, por rebalanceamento:
+        #  - Pos Abs : retorno do período > 0
+        #  - Pos>Ref : retorno do período > taxa de referência do período (excesso do período > 0)
+        n = len(step_metrics)
+        if n > 0:
+            avg_metrics['positive_return_pct'] = sum(
+                1 for s in step_metrics if s.get('total_return', 0) > 0) / n
+            avg_metrics['positive_vs_ref_pct'] = sum(
+                1 for s in step_metrics if s.get('total_return', 0) > s.get('risk_free_period', 0)) / n
+        else:
+            avg_metrics['positive_return_pct'] = 0
+            avg_metrics['positive_vs_ref_pct'] = 0
+
+        # % de steps que cumpriram a META dentro da janela de otimização.
+        # Diferente das colunas acima (que medem o resultado FORA da amostra),
+        # esta mostra se o alvo era alcançável onde o otimizador podia agir:
+        #  - 100% com Ret% abaixo do alvo => a meta foi batida in-sample mas
+        #    não se sustentou out-of-sample (restrição sem folga)
+        #  - abaixo de 100% => em alguns steps o alvo era inatingível e valeu o
+        #    fallback de "maior retorno possível"
+        # None quando a meta não estava em uso (coluna exibe "—").
+        meta_flags = [s['meta_atingida'] for s in step_metrics
+                      if s.get('meta_atingida') is not None]
+        avg_metrics['meta_ok_pct'] = (
+            sum(1 for f in meta_flags if f) / len(meta_flags) if meta_flags else None)
 
         avg_metrics['annual_return'] = retorno_anualizado
         avg_metrics['risk_free_annual'] = taxa_ref_anualizada
@@ -3958,46 +4266,117 @@ Isso ajuda a detectar:
         return result
 
     def process_and_display_results(self, results):
+        # Desabilita ordenação durante a inserção para evitar reordenação a cada linha
+        self.auto_results_tree.setSortingEnabled(False)
         self.auto_results_tree.setRowCount(0)
 
         results.sort(key=lambda x: x['metrics']['sharpe'], reverse=True)
 
         obj_names = {
-            'sharpe': 'Sharpe', 'sortino': 'Sortino', 'volatility': 'MinRisco',
-            'hc10': 'Inc/[(1-R²)×Vol]', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso'
+            'sharpe': 'Sharpe', 'sortino': 'Sortino', 'volatility': 'MinRisco', 'under_water': 'MinUW',
+            'hc10': 'Inc/R²Vol', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso',
+            'excess_sharpe': 'Sharpe.Exc'
         }
 
         for i, result in enumerate(results):
             config = result['config']
             metrics = result['metrics']
 
-            values = (
-                str(i + 1),
-                config['otim_period'],
-                config['rebal_period'],
-                obj_names.get(config['objective'], config['objective']),
-                str(int(metrics['n_assets'])),
-                f"{metrics['sharpe']:.3f}",
-                f"{metrics['annual_return']:.1%}",
-                f"{metrics.get('risk_free_annual', 0):.1%}",
-                f"{metrics['volatility']:.1%}",
-                f"{metrics['positive_return_pct']:.1%}"
+            # (texto exibido, chave numérica para ordenação — None = ordena como texto)
+            cells = (
+                (str(i + 1), i + 1),
+                (config['otim_period'], None),
+                (config['rebal_period'], None),
+                (obj_names.get(config['objective'], config['objective']), None),
+                (str(int(metrics['n_assets'])), metrics['n_assets']),
+                (f"{metrics['sharpe']:.3f}", metrics['sharpe']),
+                (f"{metrics['annual_return']:.1%}", metrics['annual_return']),
+                # MetaOK%: "—" quando a meta não foi usada (ordena por último)
+                ((f"{metrics['meta_ok_pct']:.0%}", metrics['meta_ok_pct'])
+                 if metrics.get('meta_ok_pct') is not None else ("—", -1.0)),
+                (f"{metrics.get('risk_free_annual', 0):.1%}", metrics.get('risk_free_annual', 0)),
+                (f"{metrics['volatility']:.1%}", metrics['volatility']),
+                (f"{metrics.get('var_95', 0):.2%}", metrics.get('var_95', 0)),
+                (f"{metrics.get('positive_vs_ref_pct', 0):.1%}", metrics.get('positive_vs_ref_pct', 0)),
+                (f"{metrics['positive_return_pct']:.1%}", metrics['positive_return_pct']),
             )
 
             r = self.auto_results_tree.rowCount()
             self.auto_results_tree.insertRow(r)
-            for c, val in enumerate(values):
-                item = QTableWidgetItem(str(val))
+            for c, (text, key) in enumerate(cells):
+                item = _SortableItem(str(text))
                 item.setTextAlignment(Qt.AlignCenter)
+                if key is not None:
+                    item.setData(Qt.UserRole, float(key))
                 self.auto_results_tree.setItem(r, c, item)
 
-    def _auto_results_rows(self):
+        # Reabilita ordenação; começa ordenado por Rank (coluna 0, ascendente)
+        self.auto_results_tree.setSortingEnabled(True)
+        self.auto_results_tree.sortItems(0, Qt.AscendingOrder)
+
+    # Especificação de exportação: (cabeçalho, tipo) por coluna, na ordem da tabela.
+    # tipo: 'text' | 'int' | 'float' | 'pctN' (fração; N = casas decimais ao exibir)
+    AUTO_EXPORT_SPEC = (
+        ('Rank', 'int'),
+        ('Otimização', 'text'),
+        ('Rebalanceamento', 'text'),
+        ('Objetivo', 'text'),
+        ('N_Ativos', 'int'),
+        ('Sharpe', 'float'),
+        ('Retorno(%)', 'pct1'),
+        ('Meta_OK(%)', 'pct0'),
+        ('Taxa_Ref(%)', 'pct1'),
+        ('Volatilidade(%)', 'pct1'),
+        ('VaR95%(diário)', 'pct2'),
+        ('Pos>Ref(%)', 'pct1'),
+        ('Pos_Abs(%)', 'pct1'),
+    )
+
+    def _auto_results_rows(self, pct_as_number=False):
+        """
+        Linhas da tabela como valores TIPADOS (números de verdade, não texto),
+        respeitando a ordenação atual da tabela.
+
+        Os números vêm de Qt.UserRole (guardado na criação das células), não do
+        texto exibido — assim a exportação não herda o "%" nem o separador
+        decimal da interface.
+
+        pct_as_number=False -> percentuais como fração (0.218); use com formato
+                               de célula percentual (Excel).
+        pct_as_number=True  -> percentuais já multiplicados (21.8); use em texto
+                               puro (CSV), onde não há formatação.
+        Células sem valor (Meta_OK "—") viram None (célula vazia).
+        """
+        spec = self.AUTO_EXPORT_SPEC
         rows = []
         for r in range(self.auto_results_tree.rowCount()):
             row = []
             for c in range(self.auto_results_tree.columnCount()):
                 item = self.auto_results_tree.item(r, c)
-                row.append(item.text() if item else "")
+                if item is None:
+                    row.append(None)
+                    continue
+                kind = spec[c][1] if c < len(spec) else 'text'
+                if kind == 'text':
+                    row.append(item.text())
+                    continue
+                # "—" marca ausência de valor (meta não utilizada)
+                if item.text().strip() in ('—', '-', ''):
+                    row.append(None)
+                    continue
+                key = item.data(Qt.UserRole)
+                if key is None:
+                    row.append(item.text())
+                elif kind == 'int':
+                    row.append(int(round(float(key))))
+                elif kind == 'float':
+                    row.append(round(float(key), 6))
+                else:
+                    # Arredondamento necessário: multiplicar a fração por 100
+                    # expõe o ruído binário (0.145*100 = 14.499999999999998).
+                    # 4 casas na escala percentual preservam toda a precisão útil.
+                    row.append(round(float(key) * 100, 4) if pct_as_number
+                               else round(float(key), 6))
             rows.append(row)
         return rows
 
@@ -4014,12 +4393,15 @@ Isso ajuda a detectar:
             )
 
             if filename:
-                columns = ['Rank', 'Otimização', 'Rebalanceamento', 'Objetivo',
-                           'N_Ativos', 'Sharpe', 'Retorno(%)', 'Taxa_Ref(%)',
-                           'Volatilidade(%)', 'Positivos(%)']
-                data = self._auto_results_rows()
+                columns = [h for h, _ in self.AUTO_EXPORT_SPEC]
+                # Percentuais já multiplicados: no CSV não há formato de célula,
+                # então "21,8" sob o cabeçalho "Retorno(%)" é o que faz sentido.
+                data = self._auto_results_rows(pct_as_number=True)
                 df = pd.DataFrame(data, columns=columns)
-                df.to_csv(filename, index=False, encoding='utf-8-sig')
+                # Padrão brasileiro: separador ";" e decimal "," — assim o Excel
+                # pt-BR abre o arquivo já com os números reconhecidos como número.
+                df.to_csv(filename, index=False, encoding='utf-8-sig',
+                          sep=';', decimal=',')
                 messagebox.showinfo("Sucesso", f"Resultados exportados para:\n{filename}")
 
         except Exception as e:
@@ -4038,16 +4420,45 @@ Isso ajuda a detectar:
             )
 
             if filename:
-                columns = ['Rank', 'Otimização', 'Rebalanceamento', 'Objetivo',
-                           'N_Ativos', 'Sharpe', 'Retorno(%)', 'Taxa_Ref(%)',
-                           'Volatilidade(%)', 'Positivos(%)']
-                data = self._auto_results_rows()
+                spec = self.AUTO_EXPORT_SPEC
+                columns = [h for h, _ in spec]
+                # Percentuais como FRAÇÃO: combinados com o formato de célula
+                # percentual abaixo, viram percentual nativo do Excel. O separador
+                # decimal passa a ser o do sistema (vírgula no Brasil).
+                data = self._auto_results_rows(pct_as_number=False)
                 df = pd.DataFrame(data, columns=columns)
+
+                # Formato de número por tipo de coluna
+                fmt_by_kind = {
+                    'int': '0',
+                    'float': '0.000',
+                    'pct0': '0%',
+                    'pct1': '0.0%',
+                    'pct2': '0.00%',
+                }
 
                 with pd.ExcelWriter(filename, engine='openpyxl') as writer:
                     df.to_excel(writer, sheet_name='Resultados Auto-Otimização', index=False)
 
                     worksheet = writer.sheets['Resultados Auto-Otimização']
+
+                    # Cabeçalho em negrito e centralizado
+                    from openpyxl.styles import Font, Alignment
+                    for cell in worksheet[1]:
+                        cell.font = Font(bold=True)
+                        cell.alignment = Alignment(horizontal='center')
+
+                    # Aplica o formato numérico e o alinhamento em cada coluna
+                    for idx, (_, kind) in enumerate(spec, start=1):
+                        number_format = fmt_by_kind.get(kind)
+                        letter = worksheet.cell(row=1, column=idx).column_letter
+                        for row_i in range(2, worksheet.max_row + 1):
+                            cell = worksheet.cell(row=row_i, column=idx)
+                            if number_format:
+                                cell.number_format = number_format
+                            cell.alignment = Alignment(horizontal='center')
+
+                    # Largura das colunas pelo conteúdo já formatado
                     for column in worksheet.columns:
                         max_length = 0
                         column_letter = column[0].column_letter
@@ -4057,8 +4468,12 @@ Isso ajuda a detectar:
                                     max_length = len(str(cell.value))
                             except Exception:
                                 pass
-                        adjusted_width = min(max_length + 2, 30)
+                        adjusted_width = min(max_length + 3, 30)
                         worksheet.column_dimensions[column_letter].width = adjusted_width
+
+                    # Congela o cabeçalho e liga o autofiltro
+                    worksheet.freeze_panes = 'A2'
+                    worksheet.auto_filter.ref = worksheet.dimensions
 
                 messagebox.showinfo("Sucesso", f"Resultados exportados para:\n{filename}")
 
