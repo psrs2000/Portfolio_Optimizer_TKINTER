@@ -21,7 +21,7 @@ os.environ.setdefault("QT_API", "pyqt5")
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 import matplotlib
 matplotlib.use("QtAgg")
@@ -37,10 +37,20 @@ from PyQt5.QtWidgets import (
     QGridLayout, QLabel, QPushButton, QCheckBox, QRadioButton, QButtonGroup,
     QLineEdit, QSlider, QGroupBox, QScrollArea, QListWidget, QAbstractItemView,
     QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QProgressBar,
-    QMessageBox, QFileDialog, QDateEdit, QFrame, QSizePolicy
+    QMessageBox, QFileDialog, QDateEdit, QFrame, QSizePolicy, QComboBox,
+    QPlainTextEdit, QDialogButtonBox
 )
 
 from optimizer import PortfolioOptimizer
+
+# yfinance é OPCIONAL: sem ele o aplicativo funciona normalmente, apenas a
+# importação pelo Yahoo Finance fica indisponível (com aviso ao usuário).
+try:
+    import yfinance as yf
+    YFINANCE_OK = True
+except Exception:
+    yf = None
+    YFINANCE_OK = False
 
 # Sentinela equivalente ao tk.END, usado pelo adaptador de listbox
 END = "end"
@@ -565,6 +575,119 @@ class _AutoSignals(QObject):
     finished = pyqtSignal()
 
 
+# =============================================================================
+# IMPORTAÇÃO DE DADOS PELO YAHOO FINANCE
+# =============================================================================
+
+# Tipos de ativo e o sufixo aplicado ao código digitado.
+# "LIVRE" é um marcador: nesse modo o código vai exatamente como digitado.
+YAHOO_ASSET_TYPES = (
+    ("Ações Brasileiras (.SA)", ".SA"),
+    ("Ações Americanas", ""),
+    ("ETFs Americanos", ""),
+    ("Criptomoedas", ""),
+    ("Códigos Livres do Yahoo", "LIVRE"),
+)
+
+
+def yahoo_symbol(simbolo, sufixo):
+    """Monta o código final enviado ao Yahoo a partir do que foi digitado."""
+    simbolo = simbolo.strip()
+    if sufixo in ("", None, "LIVRE"):
+        return simbolo          # modo livre / mercados sem sufixo
+    if "." in simbolo:
+        return simbolo          # já veio com sufixo: respeita o que o usuário digitou
+    return simbolo + sufixo
+
+
+def fetch_yahoo_prices(simbolos, data_inicio, data_fim, sufixo=".SA", progress=None):
+    """
+    Baixa o histórico diário de cada símbolo no Yahoo Finance.
+
+    progress: callable(indice, total, simbolo) chamado antes de cada busca,
+    para a interface poder atualizar a barra de progresso.
+
+    Retorna (dados_por_simbolo, erros) — as chaves usam o código ORIGINAL
+    digitado, para o restante do fluxo não depender do sufixo.
+    """
+    if not YFINANCE_OK:
+        raise RuntimeError(
+            "A biblioteca 'yfinance' não está instalada.\n\n"
+            "Instale com:  pip install yfinance"
+        )
+
+    dados, erros = {}, []
+    inicio = data_inicio.strftime('%Y-%m-%d')
+    fim = data_fim.strftime('%Y-%m-%d')
+    total = len(simbolos)
+
+    for i, simbolo in enumerate(simbolos):
+        if progress is not None:
+            progress(i, total, simbolo)
+        try:
+            hist = yf.Ticker(yahoo_symbol(simbolo, sufixo)).history(
+                start=inicio, end=fim, interval="1d")
+            # Exige um mínimo de pontos: séries muito curtas quebram a base zero
+            if hist is not None and not hist.empty and len(hist) > 5:
+                dados[simbolo] = hist
+            else:
+                erros.append(simbolo)
+        except Exception:
+            erros.append(simbolo)
+
+    if progress is not None:
+        progress(total, total, "")
+    return dados, erros
+
+
+def consolidate_yahoo_prices(dados_historicos):
+    """Junta os fechamentos ('Close') num único DataFrame indexado por data."""
+    if not dados_historicos:
+        return None
+
+    series = []
+    for simbolo, hist in dados_historicos.items():
+        if 'Close' in hist.columns and not hist['Close'].empty:
+            df_temp = pd.DataFrame({simbolo: hist['Close']})
+            # Yahoo devolve índice com fuso; remover evita conflito ao mesclar
+            if getattr(df_temp.index, 'tz', None) is not None:
+                df_temp.index = df_temp.index.tz_localize(None)
+            series.append(df_temp)
+
+    if not series:
+        return None
+
+    consolidado = pd.concat(series, axis=1, sort=True)
+    consolidado.index.name = "Data"
+    return consolidado
+
+
+def build_yahoo_dataframe(dados_historicos, ativo_referencia=None):
+    """
+    Monta o DataFrame no layout que o aplicativo espera:
+    Data | Taxa_Ref_<ATIVO> (opcional) | demais ativos...
+
+    O prefixo "Taxa_Ref_" é o que faz a detecção automática da taxa de
+    referência reconhecer a coluna (ela procura por 'taxa'/'ref'/etc.).
+    """
+    consolidado = consolidate_yahoo_prices(dados_historicos)
+    if consolidado is None:
+        return None, None
+
+    df = consolidado.reset_index()
+
+    nome_ref = None
+    if ativo_referencia:
+        ref = ativo_referencia.strip().upper()
+        if ref in df.columns:
+            nome_ref = f"Taxa_Ref_{ref}"
+            df = df.rename(columns={ref: nome_ref})
+            outras = [c for c in df.columns if c not in ('Data', nome_ref)]
+            df = df[['Data', nome_ref] + outras]
+
+    return df, nome_ref
+
+
 class _SortableItem(QTableWidgetItem):
     """Item de tabela que ordena numericamente quando há uma chave numérica
     armazenada em Qt.UserRole; caso contrário, ordena como texto."""
@@ -577,6 +700,199 @@ class _SortableItem(QTableWidgetItem):
             except (TypeError, ValueError):
                 pass
         return self.text() < other.text()
+
+
+class YahooImportDialog(QDialog):
+    """
+    Diálogo de importação de cotações do Yahoo Finance.
+
+    Ao ser aceito, expõe:
+      result_df  -> DataFrame pronto (Data | Taxa_Ref_X | ativos...)
+      nome_ref   -> nome da coluna de referência criada (ou None)
+      erros      -> símbolos sem dados suficientes
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🌐 Importar do Yahoo Finance")
+        self.setMinimumSize(600, 660)
+
+        self.result_df = None
+        self.nome_ref = None
+        self.erros = []
+        self.origem_desc = "Yahoo Finance"
+
+        layout = QVBoxLayout(self)
+
+        # ----- Símbolos -----
+        sym_box = QGroupBox("📝 Símbolos dos Ativos (um por linha)")
+        sym_l = QVBoxLayout(sym_box)
+        self.symbols_edit = QPlainTextEdit()
+        self.symbols_edit.setPlainText("PETR4\nVALE3\nITUB4\nBBDC4\nABEV3")
+        self.symbols_edit.setFixedHeight(120)
+        sym_l.addWidget(self.symbols_edit)
+        layout.addWidget(sym_box)
+
+        # ----- Tipo de ativo -----
+        tipo_row = QHBoxLayout()
+        tipo_row.addWidget(QLabel("🏷️ Tipo de ativo:"))
+        self.tipo_combo = QComboBox()
+        for nome, _ in YAHOO_ASSET_TYPES:
+            self.tipo_combo.addItem(nome)
+        self.tipo_combo.currentIndexChanged.connect(self._update_tipo_hint)
+        tipo_row.addWidget(self.tipo_combo, 1)
+        layout.addLayout(tipo_row)
+
+        self.tipo_hint = QLabel("")
+        self.tipo_hint.setStyleSheet("color: gray;")
+        self.tipo_hint.setWordWrap(True)
+        layout.addWidget(self.tipo_hint)
+
+        # ----- Ativo de referência -----
+        ref_box = QGroupBox("🏛️ Ativo de Referência (benchmark / taxa livre)")
+        ref_l = QVBoxLayout(ref_box)
+        ref_row = QHBoxLayout()
+        chk_ref = QCheckBox("Incluir")
+        chk_ref.setChecked(True)
+        self.use_ref = BoolVar(chk_ref)
+        ref_row.addWidget(chk_ref)
+        self.ref_entry = QLineEdit("BOVA11")
+        self.ref_entry.setFixedWidth(140)
+        ref_row.addWidget(self.ref_entry)
+        ref_row.addStretch()
+        ref_l.addLayout(ref_row)
+        hint_ref = QLabel(
+            "Sugestões: BOVA11 (Ibovespa), LFTS11 (CDI), SMAL11 (Small Caps), IVV (S&P 500).\n"
+            "O ativo escolhido vira a coluna de referência e é detectado automaticamente.")
+        hint_ref.setStyleSheet("color: gray;")
+        hint_ref.setWordWrap(True)
+        ref_l.addWidget(hint_ref)
+        layout.addWidget(ref_box)
+
+        # ----- Período -----
+        per_box = QGroupBox("📅 Período")
+        per_l = QHBoxLayout(per_box)
+        per_l.addWidget(QLabel("Início:"))
+        self.date_ini = DateEntry()
+        self.date_ini.set_date(date.today() - timedelta(days=365 * 3))
+        self.date_ini.setMaximumDate(QDate.currentDate())
+        per_l.addWidget(self.date_ini)
+        per_l.addSpacing(20)
+        per_l.addWidget(QLabel("Fim:"))
+        self.date_fim = DateEntry()
+        self.date_fim.set_date(date.today())
+        self.date_fim.setMaximumDate(QDate.currentDate())
+        per_l.addWidget(self.date_fim)
+        per_l.addStretch()
+        layout.addWidget(per_box)
+
+        # ----- Progresso -----
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        # ----- Botões -----
+        btns = QHBoxLayout()
+        self.btn_fetch = QPushButton("🚀 Buscar e Importar")
+        self.btn_fetch.setStyleSheet(
+            "QPushButton { background-color: #0078d4; color: white; font-weight: bold; padding: 8px; }")
+        self.btn_fetch.clicked.connect(self._fetch)
+        btns.addWidget(self.btn_fetch)
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.clicked.connect(self.reject)
+        btns.addWidget(btn_cancel)
+        layout.addLayout(btns)
+
+        self._update_tipo_hint()
+
+    def _sufixo(self):
+        return YAHOO_ASSET_TYPES[self.tipo_combo.currentIndex()][1]
+
+    def _update_tipo_hint(self):
+        sufixo = self._sufixo()
+        if sufixo == "LIVRE":
+            self.tipo_hint.setText(
+                "🔥 Modo códigos livres: digite exatamente como aparece no Yahoo "
+                "(ex.: PETR4.SA, MSFT, BTC-USD). Nenhum sufixo é acrescentado.")
+        elif sufixo:
+            self.tipo_hint.setText(
+                f"O sufixo '{sufixo}' é acrescentado automaticamente (ex.: PETR4 → PETR4{sufixo}). "
+                "Códigos que já contenham ponto são usados como digitados.")
+        else:
+            self.tipo_hint.setText(
+                "Os códigos são usados como digitados (ex.: MSFT, AAPL, BTC-USD).")
+
+    def _fetch(self):
+        simbolos = [s.strip().upper() for s in self.symbols_edit.toPlainText().split('\n') if s.strip()]
+        if len(simbolos) < 2:
+            messagebox.showerror("Erro", "Digite pelo menos 2 símbolos.")
+            return
+
+        d_ini, d_fim = self.date_ini.get_date(), self.date_fim.get_date()
+        if d_ini >= d_fim:
+            messagebox.showerror("Erro", "A data de início deve ser anterior à data de fim.")
+            return
+
+        ativo_ref = self.ref_entry.text().strip().upper() if self.use_ref.get() else None
+
+        # O ativo de referência entra na mesma busca dos demais
+        busca = list(simbolos)
+        if ativo_ref and ativo_ref not in busca:
+            busca.append(ativo_ref)
+
+        self.btn_fetch.setEnabled(False)
+        self.progress.setVisible(True)
+        self.progress.setMaximum(len(busca))
+
+        def _progress(i, total, simbolo):
+            self.progress.setValue(i)
+            self.status.setText(f"Buscando {simbolo}... ({min(i + 1, total)}/{total})" if simbolo else "Consolidando...")
+            QApplication.processEvents()
+
+        try:
+            dados, erros = fetch_yahoo_prices(busca, d_ini, d_fim,
+                                              sufixo=self._sufixo(), progress=_progress)
+        except Exception as e:
+            self.progress.setVisible(False)
+            self.btn_fetch.setEnabled(True)
+            self.status.setText("")
+            messagebox.showerror("Erro", f"Falha ao consultar o Yahoo Finance:\n{str(e)}")
+            return
+
+        self.progress.setVisible(False)
+        self.btn_fetch.setEnabled(True)
+        self.status.setText("")
+
+        if not dados:
+            messagebox.showerror(
+                "Erro",
+                "Nenhum dado encontrado.\n\nVerifique os símbolos e o tipo de ativo "
+                "(ações brasileiras normalmente exigem o sufixo .SA).")
+            return
+
+        # Se a referência falhou, avisa: sem ela os objetivos de excesso somem
+        if ativo_ref and ativo_ref not in dados:
+            messagebox.showwarning(
+                "Referência não encontrada",
+                f"Não foi possível obter dados de '{ativo_ref}'.\n\n"
+                "A importação segue sem taxa de referência — os objetivos que "
+                "dependem dela ficarão indisponíveis.")
+            ativo_ref = None
+
+        df, nome_ref = build_yahoo_dataframe(dados, ativo_ref)
+        if df is None or df.empty:
+            messagebox.showerror("Erro", "Não foi possível consolidar os preços obtidos.")
+            return
+
+        n_ativos = len(df.columns) - 1
+        self.result_df = df
+        self.nome_ref = nome_ref
+        self.erros = erros
+        self.origem_desc = f"Yahoo Finance ({n_ativos} séries)"
+        self.accept()
 
 
 # =============================================================================
@@ -718,6 +1034,12 @@ class PortfolioOptimizerGUI(QMainWindow):
         btn_load = QPushButton("📂 Carregar Planilha Excel")
         btn_load.clicked.connect(self.load_excel_file)
         load_l.addWidget(btn_load)
+
+        btn_yahoo = QPushButton("🌐 Importar do Yahoo Finance")
+        btn_yahoo.clicked.connect(self.open_yahoo_import)
+        if not YFINANCE_OK:
+            btn_yahoo.setToolTip("Requer a biblioteca 'yfinance' (pip install yfinance)")
+        load_l.addWidget(btn_yahoo)
         left.addWidget(load_box)
 
         # ----- Informações do Arquivo -----
@@ -1906,78 +2228,114 @@ class PortfolioOptimizerGUI(QMainWindow):
         )
         if file_path:
             try:
-                self.dados_brutos = pd.read_excel(file_path)
-
-                if len(self.dados_brutos.columns) > 0:
-                    self.dados_brutos.columns.values[0] = "Data"
-
-                self.df = None
-                self.df_otimizacao = None
-                self.df_analise = None
-                self.has_risk_free = False
-                self.risk_free_column_name = None
-                self.detected_risk_free_rate = 0.0
-
-                if 'Data' in self.dados_brutos.columns:
-                    try:
-                        datas = pd.to_datetime(self.dados_brutos['Data'])
-                        self.periodo_disponivel = {
-                            'inicio': datas.min(),
-                            'fim': datas.max(),
-                            'total_dias': len(datas)
-                        }
-                    except Exception:
-                        self.periodo_disponivel = None
-
-                if len(self.dados_brutos.columns) > 2 and isinstance(self.dados_brutos.columns[1], str):
-                    col_name = self.dados_brutos.columns[1].lower()
-                    if any(term in col_name for term in ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']):
-                        self.has_risk_free = True
-                        self.risk_free_column_name = self.dados_brutos.columns[1]
-                        asset_columns = self.dados_brutos.columns[2:].tolist()
-                    else:
-                        asset_columns = self.dados_brutos.columns[1:].tolist()
-                else:
-                    asset_columns = self.dados_brutos.columns[1:].tolist()
-
-                file_name = os.path.basename(file_path)
-                if self.periodo_disponivel:
-                    status_text = (
-                        f"✅ Arquivo: {file_name}\n"
-                        f"📊 Dimensões: {self.dados_brutos.shape[0]} linhas x {self.dados_brutos.shape[1]} colunas\n"
-                        f"📅 Período: {self.periodo_disponivel['inicio'].strftime('%d/%m/%Y')} a "
-                        f"{self.periodo_disponivel['fim'].strftime('%d/%m/%Y')}\n"
-                        f"🗓️ Total: {self.periodo_disponivel['total_dias']} dias"
-                    )
-                else:
-                    status_text = (f"✅ Arquivo: {file_name}\n"
-                                   f"📊 Dimensões: {self.dados_brutos.shape[0]} linhas x "
-                                   f"{self.dados_brutos.shape[1]} colunas")
-
-                self.status_label.setText(status_text)
-
-                if self.has_risk_free:
-                    self.risk_free_info.setText(f"✅ Detectada: '{self.risk_free_column_name}'")
-                    self.risk_free_info.setStyleSheet("color: green;")
-                    self.manual_risk_entry.setEnabled(False)
-                    self.update_objective_options()
-                else:
-                    self.risk_free_info.setText("❌ Nenhuma taxa detectada")
-                    self.risk_free_info.setStyleSheet("color: red;")
-                    self.manual_risk_entry.setEnabled(True)
-
-                self.assets_listbox.delete(0, END)
-                for asset in asset_columns:
-                    self.assets_listbox.insert(END, asset)
-
-                self.update_advanced_widgets()
-                self.atualizar_datas_automaticas()
-                self._update_selection_info()
-
+                df = pd.read_excel(file_path)
+                if len(df.columns) > 0:
+                    df.columns.values[0] = "Data"
+                self._apply_raw_data(df, f"Arquivo: {os.path.basename(file_path)}")
                 messagebox.showinfo("Sucesso", "📥 Dados brutos carregados!\n🎯 Agora configure as janelas temporais.")
-
             except Exception as e:
                 messagebox.showerror("Erro", f"Erro ao carregar arquivo:\n{str(e)}")
+
+    def _apply_raw_data(self, df, origem):
+        """
+        Recebe um DataFrame bruto (Data na 1ª coluna) e prepara todo o estado da
+        aplicação: detecta a taxa de referência, popula a lista de ativos e
+        ajusta as janelas temporais.
+
+        Compartilhado pelo carregamento de planilha e pela importação do Yahoo
+        Finance, para que as duas origens se comportem exatamente igual.
+        """
+        self.dados_brutos = df
+
+        self.df = None
+        self.df_otimizacao = None
+        self.df_analise = None
+        self.has_risk_free = False
+        self.risk_free_column_name = None
+        self.detected_risk_free_rate = 0.0
+        self.periodo_disponivel = None
+
+        if 'Data' in self.dados_brutos.columns:
+            try:
+                datas = pd.to_datetime(self.dados_brutos['Data'])
+                self.periodo_disponivel = {
+                    'inicio': datas.min(),
+                    'fim': datas.max(),
+                    'total_dias': len(datas)
+                }
+            except Exception:
+                self.periodo_disponivel = None
+
+        # Taxa de referência: 2ª coluna cujo nome contenha um dos termos-chave
+        if len(self.dados_brutos.columns) > 2 and isinstance(self.dados_brutos.columns[1], str):
+            col_name = self.dados_brutos.columns[1].lower()
+            if any(term in col_name for term in ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']):
+                self.has_risk_free = True
+                self.risk_free_column_name = self.dados_brutos.columns[1]
+                asset_columns = self.dados_brutos.columns[2:].tolist()
+            else:
+                asset_columns = self.dados_brutos.columns[1:].tolist()
+        else:
+            asset_columns = self.dados_brutos.columns[1:].tolist()
+
+        if self.periodo_disponivel:
+            status_text = (
+                f"✅ {origem}\n"
+                f"📊 Dimensões: {self.dados_brutos.shape[0]} linhas x {self.dados_brutos.shape[1]} colunas\n"
+                f"📅 Período: {self.periodo_disponivel['inicio'].strftime('%d/%m/%Y')} a "
+                f"{self.periodo_disponivel['fim'].strftime('%d/%m/%Y')}\n"
+                f"🗓️ Total: {self.periodo_disponivel['total_dias']} dias"
+            )
+        else:
+            status_text = (f"✅ {origem}\n"
+                           f"📊 Dimensões: {self.dados_brutos.shape[0]} linhas x "
+                           f"{self.dados_brutos.shape[1]} colunas")
+
+        self.status_label.setText(status_text)
+
+        if self.has_risk_free:
+            self.risk_free_info.setText(f"✅ Detectada: '{self.risk_free_column_name}'")
+            self.risk_free_info.setStyleSheet("color: green;")
+            self.manual_risk_entry.setEnabled(False)
+            self.update_objective_options()
+        else:
+            self.risk_free_info.setText("❌ Nenhuma taxa detectada")
+            self.risk_free_info.setStyleSheet("color: red;")
+            self.manual_risk_entry.setEnabled(True)
+            self.update_objective_options()
+
+        self.assets_listbox.delete(0, END)
+        for asset in asset_columns:
+            self.assets_listbox.insert(END, asset)
+
+        self.update_advanced_widgets()
+        self.atualizar_datas_automaticas()
+        self._update_selection_info()
+
+    def open_yahoo_import(self):
+        """Abre o diálogo de importação de cotações do Yahoo Finance."""
+        if not YFINANCE_OK:
+            messagebox.showerror(
+                "yfinance não instalado",
+                "A importação pelo Yahoo Finance exige a biblioteca 'yfinance'.\n\n"
+                "Instale com:\n    pip install yfinance\n\n"
+                "Depois reinicie o aplicativo."
+            )
+            return
+
+        dlg = YahooImportDialog(self)
+        if dlg.exec_() == QDialog.Accepted and dlg.result_df is not None:
+            try:
+                self._apply_raw_data(dlg.result_df, dlg.origem_desc)
+                msg = f"📥 {len(dlg.result_df.columns) - 1} séries importadas do Yahoo Finance!"
+                if dlg.nome_ref:
+                    msg += f"\n🏛️ Taxa de referência: '{dlg.nome_ref}'"
+                if dlg.erros:
+                    msg += f"\n\n⚠️ Sem dados para: {', '.join(dlg.erros)}"
+                msg += "\n\n🎯 Agora configure as janelas temporais."
+                messagebox.showinfo("Sucesso", msg)
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao aplicar os dados importados:\n{str(e)}")
 
     def update_objective_options(self):
         """Atualizar opções de objetivo baseado na taxa livre"""

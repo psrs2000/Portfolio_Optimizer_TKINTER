@@ -16,7 +16,7 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 
 ## 1.1 Principais Funcionalidades
 
-- Carregamento de dados históricos de preços via planilha Excel.
+- Carregamento de dados históricos de preços via planilha Excel **ou busca online pelo Yahoo Finance**.
 - Configuração de janelas temporais separadas para otimização e validação.
 - **Oito objetivos de otimização**, incluindo Sharpe, Sortino, Under Water, linearidade e dois objetivos aplicados ao excesso sobre a referência.
 - Restrições globais e individuais de peso por ativo, com importação via arquivo Excel/CSV.
@@ -37,6 +37,7 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 | Sistema Operacional    | Windows 10/11, Linux ou macOS                |
 | Python                 | 3.8 ou superior (recomendado 3.10+)          |
 | Bibliotecas            | PyQt5, pandas, numpy, scipy, matplotlib, openpyxl |
+| Opcional               | yfinance (apenas para a importação pelo Yahoo Finance) |
 | Módulo adicional       | optimizer.py (incluso no projeto)            |
 | Resolução de tela      | Mínimo 1400 × 900 pixels (recomendado 2100+ de largura para ver a tabela da Auto-Otimização inteira) |
 | Formato de dados       | Planilha Excel (.xlsx ou .xls) e CSV         |
@@ -87,6 +88,34 @@ A planilha deve seguir o seguinte padrão:
 - Se uma taxa de referência for detectada automaticamente, ela aparecerá em verde no painel 'Taxa de Referência Detectada'. Caso contrário, um aviso em vermelho indicará que nenhuma taxa foi encontrada.
 
 ⚠️ Se a taxa de referência for detectada automaticamente, o campo de taxa manual na aba Configuração é desabilitado. Se não for detectada, o campo manual permanece disponível para entrada manual do valor acumulado no período.
+
+## 3.2.1 Importar do Yahoo Finance (Online)
+
+Em vez de montar a planilha à mão, você pode baixar as cotações direto do Yahoo Finance pelo botão **🌐 Importar do Yahoo Finance**. O resultado alimenta o programa exatamente como uma planilha carregada — mesmo fluxo daí em diante.
+
+Na janela que abre:
+
+- **📝 Símbolos dos Ativos:** um código por linha (ex.: `PETR4`, `VALE3`, `ITUB4`). Mínimo de 2.
+- **🏷️ Tipo de ativo:** define o sufixo acrescentado automaticamente ao código.
+
+| **Tipo**                 | **Comportamento**                                                         |
+| ------------------------ | ------------------------------------------------------------------------- |
+| Ações Brasileiras (.SA)  | Acrescenta `.SA` (ex.: `PETR4` → `PETR4.SA`).                             |
+| Ações Americanas / ETFs / Criptomoedas | Usa o código como digitado (ex.: `MSFT`, `BTC-USD`).        |
+| Códigos Livres do Yahoo  | Nenhum sufixo é acrescentado — digite exatamente como aparece no Yahoo.   |
+
+- **🏛️ Ativo de Referência:** informe um benchmark (padrão `BOVA11`) e marque **Incluir**. Ele é baixado junto e vira a coluna de referência, renomeada para `Taxa_Ref_<CÓDIGO>` e posicionada como segunda coluna — é isso que faz a **detecção automática** reconhecê-la e habilitar os objetivos de excesso. Sugestões: `BOVA11` (Ibovespa), `LFTS11` (CDI), `SMAL11` (Small Caps), `IVV` (S&P 500).
+- **📅 Período:** datas de início e fim da busca (padrão: últimos 3 anos).
+
+Clique em **🚀 Buscar e Importar**. Uma barra de progresso mostra o andamento ativo a ativo.
+
+💡 Códigos que já contenham ponto (ex.: `PETR4.SA`) são usados como digitados, mesmo no modo com sufixo — não vira `PETR4.SA.SA`.
+
+⚠️ Séries com menos de 6 pregões no período são descartadas, e os símbolos sem dados são listados ao final. Se o **ativo de referência** falhar, a importação continua sem ele e o programa avisa — nesse caso os objetivos que dependem da referência ficam indisponíveis.
+
+⚠️ **Requer a biblioteca `yfinance`** (`pip install yfinance`). Sem ela o aplicativo funciona normalmente, apenas esse botão exibe um aviso explicando como instalar.
+
+💡 Os dados vêm como **preços de fechamento**, exatamente o formato que o programa espera — a transformação para base zero continua sendo feita internamente ao processar o período.
 
 ## 3.3 Configurar Janelas Temporais
 
