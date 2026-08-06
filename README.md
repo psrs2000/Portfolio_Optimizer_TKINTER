@@ -150,6 +150,18 @@ O botão **📊 Importar via Excel (renda fixa)** usa a função `STOCKHISTORY` 
 
 💡 **Fonte complementar, não substituta:** use a B3 como fonte principal e o Excel só para os códigos de renda fixa que faltarem. Não misture as duas fontes na mesma carteira — os preços têm origens diferentes (B3 vs LSEG).
 
+## 3.2.2 Baixar a Base Carregada
+
+O botão **💾 Baixar Base de Dados Carregada** salva em disco a base **bruta** atualmente em memória — não importa a origem (planilha, Yahoo, B3 ou Excel). Útil para conferir os dados, ajustá-los à mão ou guardar uma cópia da série que você montou online.
+
+- Fica **desabilitado** enquanto nenhuma base estiver carregada; habilita automaticamente após carregar/importar.
+- Escolha **.xlsx** (Excel, com datas em DD/MM/AAAA, preços numéricos, cabeçalho em negrito e primeira linha congelada) ou **.csv** (separador `;` e decimal `,`, padrão que o Excel pt-BR abre direto).
+- Grava exatamente `Data | (Taxa_Ref, se houver) | ativos...`, **sem** a transformação para base zero — ou seja, os preços originais, do jeito que o otimizador os recebe.
+
+💡 Os preços são gravados com **precisão total** (sem arredondamento), para que o arquivo seja fiel ao dado usado nos cálculos. No Excel, a exibição fica limpa (2 casas) mas o valor exato é preservado na célula.
+
+💡 Um bom uso: importe online (Yahoo/B3/Excel), baixe a base, ajuste o que precisar numa planilha e recarregue pelo botão **📂 Carregar Planilha Excel**.
+
 ## 3.3 Configurar Janelas Temporais
 
 Após carregar o arquivo, configure as três datas críticas que definem os dois períodos de análise:

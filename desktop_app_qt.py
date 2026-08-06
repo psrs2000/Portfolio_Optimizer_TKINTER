@@ -1326,6 +1326,14 @@ class PortfolioOptimizerGUI(QMainWindow):
         btn_rf.setToolTip("Fonte complementar: requer Windows + Excel 365 + xlwings")
         load_l.addWidget(btn_rf)
 
+        # Baixar a base bruta atualmente carregada (de qualquer fonte), para
+        # conferência ou ajuste externo. Fica desabilitado até haver dados.
+        self.btn_download_base = QPushButton("💾 Baixar Base de Dados Carregada")
+        self.btn_download_base.clicked.connect(self.download_base_dados)
+        self.btn_download_base.setEnabled(False)
+        self.btn_download_base.setToolTip("Salva a base bruta atual (Excel ou CSV). Carregue ou importe dados primeiro.")
+        load_l.addWidget(self.btn_download_base)
+
         left.addWidget(load_box)
 
         # ----- Informações do Arquivo -----
@@ -2594,9 +2602,77 @@ class PortfolioOptimizerGUI(QMainWindow):
         for asset in asset_columns:
             self.assets_listbox.insert(END, asset)
 
+        # Há base carregada: libera o download dela
+        if hasattr(self, 'btn_download_base'):
+            self.btn_download_base.setEnabled(True)
+
         self.update_advanced_widgets()
         self.atualizar_datas_automaticas()
         self._update_selection_info()
+
+    def download_base_dados(self):
+        """
+        Salva a base BRUTA atualmente carregada (de qualquer fonte: planilha,
+        Yahoo, B3 ou Excel) em Excel ou CSV, para conferência ou ajuste externo.
+
+        Grava exatamente o que está em memória (Data + colunas de preços,
+        incluindo a de referência, se houver) — sem a transformação base zero,
+        que é aplicada só na hora de otimizar.
+        """
+        if getattr(self, 'dados_brutos', None) is None or self.dados_brutos.empty:
+            messagebox.showerror("Erro", "Não há base de dados carregada para baixar.")
+            return
+
+        filename = filedialog.asksaveasfilename(
+            title="Salvar base de dados carregada",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if not filename:
+            return
+
+        try:
+            df = self.dados_brutos.copy()
+
+            # Garante a coluna de datas como data de verdade (não texto)
+            if 'Data' in df.columns:
+                df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
+
+            if filename.lower().endswith(".csv"):
+                # Padrão brasileiro: ";" e "," — abre direto no Excel pt-BR
+                df.to_csv(filename, index=False, encoding='utf-8-sig',
+                          sep=';', decimal=',', date_format='%d/%m/%Y')
+            else:
+                with pd.ExcelWriter(filename, engine='openpyxl', date_format='DD/MM/YYYY') as writer:
+                    df.to_excel(writer, sheet_name='Base de Dados', index=False)
+                    ws = writer.sheets['Base de Dados']
+
+                    from openpyxl.styles import Font
+                    for cell in ws[1]:
+                        cell.font = Font(bold=True)
+                    ws.freeze_panes = "B2"
+
+                    # Data em DD/MM/YYYY; demais colunas como número com 2 casas
+                    for row in ws.iter_rows(min_row=2, min_col=1, max_col=1):
+                        for cell in row:
+                            cell.number_format = "DD/MM/YYYY"
+                    for row in ws.iter_rows(min_row=2, min_col=2):
+                        for cell in row:
+                            cell.number_format = "#,##0.00"
+
+                    for col_cells in ws.columns:
+                        letra = col_cells[0].column_letter
+                        largura = max((len(str(c.value)) for c in col_cells if c.value is not None),
+                                      default=10)
+                        ws.column_dimensions[letra].width = min(largura + 2, 22)
+
+            n_ativos = len([c for c in df.columns if c != 'Data'])
+            messagebox.showinfo(
+                "Sucesso",
+                f"💾 Base salva em:\n{filename}\n\n"
+                f"📊 {df.shape[0]} linhas × {n_ativos} colunas de preços.")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao salvar a base:\n{str(e)}")
 
     def open_yahoo_import(self):
         """Abre o diálogo de importação de cotações do Yahoo Finance."""
