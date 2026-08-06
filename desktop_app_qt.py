@@ -56,19 +56,21 @@ except Exception:
 #  - B3 (COTAHIST): baixa os arquivos anuais da B3; requer 'requests'.
 #  - Excel/STOCKHISTORY: fonte complementar p/ renda fixa; requer Windows +
 #    Excel 365 + 'xlwings'. O módulo importa, mas a busca só roda no Windows.
+# Guardamos o MOTIVO real da falha de importação (arquivo ausente, dependência
+# faltando, etc.) para exibir ao usuário em vez de um palpite genérico.
 try:
     import b3_series_wide_com_limpeza as b3src
-    B3_OK = True
-except Exception:
-    b3src = None
-    B3_OK = False
+    B3_OK, B3_IMPORT_ERROR = True, None
+except Exception as _e:
+    b3src, B3_OK = None, False
+    B3_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
 try:
     import b3_excel_rendafixa as rfsrc
-    EXCELRF_OK = True
-except Exception:
-    rfsrc = None
-    EXCELRF_OK = False
+    EXCELRF_OK, EXCELRF_IMPORT_ERROR = True, None
+except Exception as _e:
+    rfsrc, EXCELRF_OK = None, False
+    EXCELRF_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
 # Sentinela equivalente ao tk.END, usado pelo adaptador de listbox
 END = "end"
@@ -2613,9 +2615,14 @@ class PortfolioOptimizerGUI(QMainWindow):
         """Abre o diálogo de importação de cotações da B3 (COTAHIST)."""
         if not B3_OK:
             messagebox.showerror(
-                "Dependência ausente",
-                "A importação da B3 exige a biblioteca 'requests'.\n\n"
-                "Instale com:\n    pip install requests\n\n"
+                "Importação da B3 indisponível",
+                "Não foi possível carregar o módulo de importação da B3.\n\n"
+                f"Motivo: {B3_IMPORT_ERROR}\n\n"
+                "Verifique:\n"
+                "• se o arquivo 'b3_series_wide_com_limpeza.py' está na MESMA "
+                "pasta que 'desktop_app_qt.py';\n"
+                "• se a biblioteca 'requests' está instalada no mesmo Python "
+                "(pip install requests).\n\n"
                 "Depois reinicie o aplicativo.")
             return
         self._run_import_dialog(B3ImportDialog(self), "B3")
@@ -2624,8 +2631,12 @@ class PortfolioOptimizerGUI(QMainWindow):
         """Abre o diálogo de importação via Excel/STOCKHISTORY (renda fixa)."""
         if not EXCELRF_OK:
             messagebox.showerror(
-                "Módulo indisponível",
-                "O módulo de importação via Excel não pôde ser carregado.")
+                "Importação via Excel indisponível",
+                "Não foi possível carregar o módulo de importação via Excel.\n\n"
+                f"Motivo: {EXCELRF_IMPORT_ERROR}\n\n"
+                "Verifique se o arquivo 'b3_excel_rendafixa.py' está na MESMA "
+                "pasta que 'desktop_app_qt.py'.\n\n"
+                "Depois reinicie o aplicativo.")
             return
         self._run_import_dialog(ExcelRFImportDialog(self), "Excel (renda fixa)")
 
