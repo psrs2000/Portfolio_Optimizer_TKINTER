@@ -255,9 +255,14 @@ def parse_cotahist(raw: bytes, alvo=None, somente_vista=True) -> pd.DataFrame:
     return df
 
 
-def baixar_periodo(data_ini, data_fim, alvo, somente_vista=True) -> pd.DataFrame:
+def baixar_periodo(data_ini, data_fim, alvo, somente_vista=True, progress=None) -> pd.DataFrame:
+    # progress(indice, total, ano): callback opcional para uma barra de progresso
+    # (a interface gráfica usa; no modo console fica None e nada muda).
     frames = []
-    for ano in range(data_ini.year, data_fim.year + 1):
+    anos = list(range(data_ini.year, data_fim.year + 1))
+    for i, ano in enumerate(anos):
+        if progress is not None:
+            progress(i, len(anos), ano)
         print(f"  Baixando COTAHIST de {ano}... (arquivo grande, aguarde)")
         try:
             raw = download_zip(build_url(ano))
@@ -268,6 +273,8 @@ def baixar_periodo(data_ini, data_fim, alvo, somente_vista=True) -> pd.DataFrame
         except requests.HTTPError as exc:
             print(f"  [aviso] não foi possível baixar {ano}: {exc}")
         time.sleep(PAUSA_ENTRE_ANOS)
+    if progress is not None:
+        progress(len(anos), len(anos), None)
     frames = [f for f in frames if not f.empty]
     if not frames:
         raise RuntimeError("Nenhum dado dos seus ativos foi encontrado no período.")

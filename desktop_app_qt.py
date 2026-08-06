@@ -38,7 +38,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QSlider, QGroupBox, QScrollArea, QListWidget, QAbstractItemView,
     QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QProgressBar,
     QMessageBox, QFileDialog, QDateEdit, QFrame, QSizePolicy, QComboBox,
-    QPlainTextEdit, QDialogButtonBox
+    QPlainTextEdit, QDialogButtonBox, QSpinBox
 )
 
 from optimizer import PortfolioOptimizer
@@ -51,6 +51,24 @@ try:
 except Exception:
     yf = None
     YFINANCE_OK = False
+
+# Fontes nacionais — também OPCIONAIS (cada uma tem suas dependências):
+#  - B3 (COTAHIST): baixa os arquivos anuais da B3; requer 'requests'.
+#  - Excel/STOCKHISTORY: fonte complementar p/ renda fixa; requer Windows +
+#    Excel 365 + 'xlwings'. O módulo importa, mas a busca só roda no Windows.
+try:
+    import b3_series_wide_com_limpeza as b3src
+    B3_OK = True
+except Exception:
+    b3src = None
+    B3_OK = False
+
+try:
+    import b3_excel_rendafixa as rfsrc
+    EXCELRF_OK = True
+except Exception:
+    rfsrc = None
+    EXCELRF_OK = False
 
 # Sentinela equivalente ao tk.END, usado pelo adaptador de listbox
 END = "end"
@@ -662,30 +680,35 @@ def consolidate_yahoo_prices(dados_historicos):
     return consolidado
 
 
+def promote_reference_column(df, ativo_referencia):
+    """
+    Renomeia a coluna do ativo de referência para 'Taxa_Ref_<CÓDIGO>' e a move
+    para a segunda posição (logo após 'Data'). É esse prefixo + posição que faz
+    a detecção automática reconhecer a taxa de referência e habilitar os
+    objetivos de excesso. Retorna (df, nome_da_coluna) — nome None se o ativo
+    não estiver presente. Usada por todas as fontes online (Yahoo, B3, Excel).
+    """
+    if not ativo_referencia:
+        return df, None
+    ref = ativo_referencia.strip().upper()
+    if ref not in df.columns:
+        return df, None
+    nome_ref = f"Taxa_Ref_{ref}"
+    df = df.rename(columns={ref: nome_ref})
+    outras = [c for c in df.columns if c not in ('Data', nome_ref)]
+    return df[['Data', nome_ref] + outras], nome_ref
+
+
 def build_yahoo_dataframe(dados_historicos, ativo_referencia=None):
     """
     Monta o DataFrame no layout que o aplicativo espera:
     Data | Taxa_Ref_<ATIVO> (opcional) | demais ativos...
-
-    O prefixo "Taxa_Ref_" é o que faz a detecção automática da taxa de
-    referência reconhecer a coluna (ela procura por 'taxa'/'ref'/etc.).
     """
     consolidado = consolidate_yahoo_prices(dados_historicos)
     if consolidado is None:
         return None, None
-
     df = consolidado.reset_index()
-
-    nome_ref = None
-    if ativo_referencia:
-        ref = ativo_referencia.strip().upper()
-        if ref in df.columns:
-            nome_ref = f"Taxa_Ref_{ref}"
-            df = df.rename(columns={ref: nome_ref})
-            outras = [c for c in df.columns if c not in ('Data', nome_ref)]
-            df = df[['Data', nome_ref] + outras]
-
-    return df, nome_ref
+    return promote_reference_column(df, ativo_referencia)
 
 
 class _SortableItem(QTableWidgetItem):
@@ -895,6 +918,255 @@ class YahooImportDialog(QDialog):
         self.accept()
 
 
+class _PriceImportDialog(QDialog):
+    """
+    Base dos diálogos de importação por PREÇO (B3 e Excel/renda fixa), que
+    compartilham quase toda a interface: símbolos, tipo de preço, limpeza (k),
+    ativo de referência, período e barra de progresso.
+
+    A subclasse só precisa implementar _run_fetch(...), devolvendo
+    (wide_df, faltantes, relatorio) — o resto do fluxo (validação, promoção da
+    referência, empacotamento do resultado) fica aqui.
+    """
+    progress_label = "Buscando"
+
+    def __init__(self, parent=None, titulo="Importar", banner=None):
+        super().__init__(parent)
+        self.setWindowTitle(titulo)
+        self.setMinimumSize(600, 680)
+
+        self.result_df = None
+        self.nome_ref = None
+        self.erros = []
+        self.relatorio = None
+        self.origem_desc = titulo
+
+        layout = QVBoxLayout(self)
+
+        if banner:
+            lbl_banner = QLabel(banner)
+            lbl_banner.setWordWrap(True)
+            lbl_banner.setStyleSheet(
+                "background:#fff3cd; color:#664d03; padding:8px; border-radius:4px;")
+            layout.addWidget(lbl_banner)
+
+        # ----- Símbolos -----
+        sym_box = QGroupBox("📝 Símbolos dos Ativos (um por linha)")
+        sym_l = QVBoxLayout(sym_box)
+        self.symbols_edit = QPlainTextEdit()
+        self.symbols_edit.setPlainText(self.default_symbols())
+        self.symbols_edit.setFixedHeight(110)
+        sym_l.addWidget(self.symbols_edit)
+        layout.addWidget(sym_box)
+
+        # ----- Tipo de preço + limpeza -----
+        opts = QHBoxLayout()
+        opts.addWidget(QLabel("💰 Preço:"))
+        self.preco_combo = QComboBox()
+        for nome in ("Abertura", "Máximo", "Mínimo", "Fechamento"):
+            self.preco_combo.addItem(nome)
+        self.preco_combo.setCurrentText("Fechamento")
+        opts.addWidget(self.preco_combo)
+        opts.addSpacing(20)
+        opts.addWidget(QLabel("🧹 Elimina após N dias sem dado:"))
+        self.k_spin = QSpinBox()
+        self.k_spin.setRange(1, 999)
+        self.k_spin.setValue(10)
+        self.k_spin.setToolTip(
+            "Se um ativo ficar mais de N pregões seguidos sem cotação no período, "
+            "ele é descartado. Lacunas menores são preenchidas com o dia anterior.")
+        opts.addWidget(self.k_spin)
+        opts.addStretch()
+        layout.addLayout(opts)
+
+        # ----- Ativo de referência -----
+        ref_box = QGroupBox("🏛️ Ativo de Referência (benchmark / taxa livre)")
+        ref_l = QVBoxLayout(ref_box)
+        ref_row = QHBoxLayout()
+        chk_ref = QCheckBox("Incluir")
+        chk_ref.setChecked(True)
+        self.use_ref = BoolVar(chk_ref)
+        ref_row.addWidget(chk_ref)
+        self.ref_entry = QLineEdit(self.default_reference())
+        self.ref_entry.setFixedWidth(140)
+        ref_row.addWidget(self.ref_entry)
+        ref_row.addStretch()
+        ref_l.addLayout(ref_row)
+        hint = QLabel(
+            "O ativo escolhido é buscado junto, vira a coluna de referência "
+            "(Taxa_Ref_<código>) e habilita os objetivos de excesso.")
+        hint.setStyleSheet("color: gray;")
+        hint.setWordWrap(True)
+        ref_l.addWidget(hint)
+        layout.addWidget(ref_box)
+
+        # ----- Período -----
+        per_box = QGroupBox("📅 Período")
+        per_l = QHBoxLayout(per_box)
+        per_l.addWidget(QLabel("Início:"))
+        self.date_ini = DateEntry()
+        self.date_ini.set_date(date.today() - timedelta(days=365 * 3))
+        self.date_ini.setMaximumDate(QDate.currentDate())
+        per_l.addWidget(self.date_ini)
+        per_l.addSpacing(20)
+        per_l.addWidget(QLabel("Fim:"))
+        self.date_fim = DateEntry()
+        self.date_fim.set_date(date.today())
+        self.date_fim.setMaximumDate(QDate.currentDate())
+        per_l.addWidget(self.date_fim)
+        per_l.addStretch()
+        layout.addWidget(per_box)
+
+        # ----- Progresso -----
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        # ----- Botões -----
+        btns = QHBoxLayout()
+        self.btn_fetch = QPushButton("🚀 Buscar e Importar")
+        self.btn_fetch.setStyleSheet(
+            "QPushButton { background-color: #0078d4; color: white; font-weight: bold; padding: 8px; }")
+        self.btn_fetch.clicked.connect(self._fetch)
+        btns.addWidget(self.btn_fetch)
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.clicked.connect(self.reject)
+        btns.addWidget(btn_cancel)
+        layout.addLayout(btns)
+
+    # ---- pontos de personalização das subclasses ----
+    def default_symbols(self):
+        return "PETR4\nVALE3\nITUB4\nBBDC4\nABEV3"
+
+    def default_reference(self):
+        return "BOVA11"
+
+    def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
+        """Deve devolver (wide_df, faltantes, relatorio). Implementada na subclasse."""
+        raise NotImplementedError
+
+    # ---- fluxo comum ----
+    def _fetch(self):
+        simbolos = [s.strip().upper() for s in self.symbols_edit.toPlainText().split('\n') if s.strip()]
+        if len(simbolos) < 2:
+            messagebox.showerror("Erro", "Digite pelo menos 2 símbolos.")
+            return
+
+        d_ini = datetime.combine(self.date_ini.get_date(), datetime.min.time())
+        d_fim = datetime.combine(self.date_fim.get_date(), datetime.min.time())
+        if d_ini >= d_fim:
+            messagebox.showerror("Erro", "A data de início deve ser anterior à data de fim.")
+            return
+
+        ativo_ref = self.ref_entry.text().strip().upper() if self.use_ref.get() else None
+        busca = list(simbolos)
+        if ativo_ref and ativo_ref not in busca:
+            busca.append(ativo_ref)
+
+        tipo_preco = self.preco_combo.currentText()
+        k = self.k_spin.value()
+
+        self.btn_fetch.setEnabled(False)
+        self.progress.setVisible(True)
+        self.progress.setMaximum(0)  # indeterminado até o 1º progresso
+
+        def _progress(i, total, item):
+            self.progress.setMaximum(max(int(total), 1))
+            self.progress.setValue(int(i))
+            if item is not None:
+                self.status.setText(f"{self.progress_label}: {item} ({min(i + 1, total)}/{total})")
+            else:
+                self.status.setText("Processando...")
+            QApplication.processEvents()
+
+        try:
+            wide, faltantes, relatorio = self._run_fetch(busca, d_ini, d_fim, tipo_preco, k, _progress)
+        except Exception as e:
+            self.progress.setVisible(False)
+            self.btn_fetch.setEnabled(True)
+            self.status.setText("")
+            messagebox.showerror("Erro", f"Falha na importação:\n{str(e)}")
+            return
+
+        self.progress.setVisible(False)
+        self.btn_fetch.setEnabled(True)
+        self.status.setText("")
+
+        if wide is None or wide.empty or (len(wide.columns) <= 1):
+            messagebox.showerror(
+                "Erro", "Nenhum dado utilizável foi obtido.\nVerifique os símbolos e o período.")
+            return
+
+        # Se a referência não sobreviveu (não veio, ou saiu na limpeza), avisa
+        if ativo_ref and ativo_ref not in wide.columns:
+            messagebox.showwarning(
+                "Referência indisponível",
+                f"'{ativo_ref}' não retornou dados suficientes.\n\n"
+                "A importação segue sem taxa de referência — os objetivos que "
+                "dependem dela ficarão indisponíveis.")
+            ativo_ref = None
+
+        wide, nome_ref = promote_reference_column(wide, ativo_ref)
+
+        n_ativos = len(wide.columns) - 1
+        self.result_df = wide
+        self.nome_ref = nome_ref
+        self.erros = list(faltantes or [])
+        self.relatorio = relatorio
+        self.origem_desc = f"{self.origem_desc} ({n_ativos} séries)"
+        self.accept()
+
+
+class B3ImportDialog(_PriceImportDialog):
+    """Importa cotações da B3 (arquivos COTAHIST anuais)."""
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            titulo="🇧🇷 Importar da B3 (COTAHIST)",
+            banner="Baixa os arquivos COTAHIST anuais da B3. O primeiro download de "
+                   "cada ano é grande (dezenas de MB) e pode levar de alguns segundos "
+                   "a minutos — a janela pode parecer parada durante cada ano.")
+        self.progress_label = "Baixando COTAHIST"
+
+    def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
+        df = b3src.baixar_periodo(d_ini, d_fim, set(simbolos),
+                                  somente_vista=b3src.SOMENTE_VISTA, progress=progress)
+        wide, faltantes = b3src.montar_planilha(
+            df, simbolos, tipo_preco, d_ini, d_fim, somente_vista=b3src.SOMENTE_VISTA)
+        wide, relatorio = b3src.limpar_dados(wide, k=k)
+        return wide, faltantes, relatorio
+
+
+class ExcelRFImportDialog(_PriceImportDialog):
+    """Importa cotações via Excel/STOCKHISTORY — complementar (renda fixa)."""
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            titulo="📊 Importar via Excel (renda fixa)",
+            banner="Fonte COMPLEMENTAR (LSEG/Refinitiv via STOCKHISTORY do Excel), para "
+                   "ETFs que o COTAHIST não cobre bem (FIXA11, IMAB11, B5P211...). "
+                   "Requer Windows com Excel 365 instalado e logado, e a biblioteca "
+                   "'xlwings'. Não misture esta fonte com a B3 na mesma carteira.")
+        self.progress_label = "Excel: buscando"
+
+    def default_symbols(self):
+        return "FIXA11\nIMAB11\nB5P211\nIRFM11"
+
+    def default_reference(self):
+        return "LFTS11"
+
+    def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
+        wide, faltantes = rfsrc.fetch_excel_wide(
+            simbolos, d_ini, d_fim, tipo_preco, visivel=False, progress=progress)
+        wide, relatorio = rfsrc.limpar_dados(wide, k=k)
+        return wide, faltantes, relatorio
+
+
 # =============================================================================
 # JANELA PRINCIPAL
 # =============================================================================
@@ -1040,6 +1312,18 @@ class PortfolioOptimizerGUI(QMainWindow):
         if not YFINANCE_OK:
             btn_yahoo.setToolTip("Requer a biblioteca 'yfinance' (pip install yfinance)")
         load_l.addWidget(btn_yahoo)
+
+        btn_b3 = QPushButton("🇧🇷 Importar da B3 (COTAHIST)")
+        btn_b3.clicked.connect(self.open_b3_import)
+        if not B3_OK:
+            btn_b3.setToolTip("Requer a biblioteca 'requests' (pip install requests)")
+        load_l.addWidget(btn_b3)
+
+        btn_rf = QPushButton("📊 Importar via Excel (renda fixa)")
+        btn_rf.clicked.connect(self.open_excel_rf_import)
+        btn_rf.setToolTip("Fonte complementar: requer Windows + Excel 365 + xlwings")
+        load_l.addWidget(btn_rf)
+
         left.addWidget(load_box)
 
         # ----- Informações do Arquivo -----
@@ -2323,19 +2607,53 @@ class PortfolioOptimizerGUI(QMainWindow):
             )
             return
 
-        dlg = YahooImportDialog(self)
-        if dlg.exec_() == QDialog.Accepted and dlg.result_df is not None:
-            try:
-                self._apply_raw_data(dlg.result_df, dlg.origem_desc)
-                msg = f"📥 {len(dlg.result_df.columns) - 1} séries importadas do Yahoo Finance!"
-                if dlg.nome_ref:
-                    msg += f"\n🏛️ Taxa de referência: '{dlg.nome_ref}'"
-                if dlg.erros:
-                    msg += f"\n\n⚠️ Sem dados para: {', '.join(dlg.erros)}"
-                msg += "\n\n🎯 Agora configure as janelas temporais."
-                messagebox.showinfo("Sucesso", msg)
-            except Exception as e:
-                messagebox.showerror("Erro", f"Erro ao aplicar os dados importados:\n{str(e)}")
+        self._run_import_dialog(YahooImportDialog(self), "Yahoo Finance")
+
+    def open_b3_import(self):
+        """Abre o diálogo de importação de cotações da B3 (COTAHIST)."""
+        if not B3_OK:
+            messagebox.showerror(
+                "Dependência ausente",
+                "A importação da B3 exige a biblioteca 'requests'.\n\n"
+                "Instale com:\n    pip install requests\n\n"
+                "Depois reinicie o aplicativo.")
+            return
+        self._run_import_dialog(B3ImportDialog(self), "B3")
+
+    def open_excel_rf_import(self):
+        """Abre o diálogo de importação via Excel/STOCKHISTORY (renda fixa)."""
+        if not EXCELRF_OK:
+            messagebox.showerror(
+                "Módulo indisponível",
+                "O módulo de importação via Excel não pôde ser carregado.")
+            return
+        self._run_import_dialog(ExcelRFImportDialog(self), "Excel (renda fixa)")
+
+    def _run_import_dialog(self, dlg, fonte):
+        """Executa um diálogo de importação e aplica o resultado, se aceito."""
+        if dlg.exec_() != QDialog.Accepted or dlg.result_df is None:
+            return
+        try:
+            self._apply_raw_data(dlg.result_df, dlg.origem_desc)
+            msg = f"📥 {len(dlg.result_df.columns) - 1} séries importadas ({fonte})!"
+            if dlg.nome_ref:
+                msg += f"\n🏛️ Taxa de referência: '{dlg.nome_ref}'"
+
+            # Relatório de limpeza (só as fontes B3/Excel devolvem)
+            rel = getattr(dlg, 'relatorio', None)
+            if rel:
+                if rel.get('regra1'):
+                    msg += f"\n🧹 Excluídos (sem dado na 1ª data): {', '.join(rel['regra1'])}"
+                if rel.get('regra2'):
+                    msg += (f"\n🧹 Excluídos (>{rel.get('k')} dias seguidos sem dado): "
+                            f"{', '.join(rel['regra2'])}")
+
+            if dlg.erros:
+                msg += f"\n\n⚠️ Sem dados para: {', '.join(dlg.erros)}"
+            msg += "\n\n🎯 Agora configure as janelas temporais."
+            messagebox.showinfo("Sucesso", msg)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao aplicar os dados importados:\n{str(e)}")
 
     def update_objective_options(self):
         """Atualizar opções de objetivo baseado na taxa livre"""

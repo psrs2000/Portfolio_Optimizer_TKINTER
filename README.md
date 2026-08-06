@@ -16,7 +16,7 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 
 ## 1.1 Principais Funcionalidades
 
-- Carregamento de dados históricos de preços via planilha Excel **ou busca online pelo Yahoo Finance**.
+- Carregamento de dados históricos de preços via planilha Excel **ou busca online em várias fontes** (Yahoo Finance, B3/COTAHIST e Excel/STOCKHISTORY).
 - Configuração de janelas temporais separadas para otimização e validação.
 - **Oito objetivos de otimização**, incluindo Sharpe, Sortino, Under Water, linearidade e dois objetivos aplicados ao excesso sobre a referência.
 - Restrições globais e individuais de peso por ativo, com importação via arquivo Excel/CSV.
@@ -37,7 +37,7 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 | Sistema Operacional    | Windows 10/11, Linux ou macOS                |
 | Python                 | 3.8 ou superior (recomendado 3.10+)          |
 | Bibliotecas            | PyQt5, pandas, numpy, scipy, matplotlib, openpyxl |
-| Opcional               | yfinance (apenas para a importação pelo Yahoo Finance) |
+| Opcional               | yfinance (Yahoo Finance), requests (B3 — normalmente já presente), xlwings + Excel 365/Windows (importação via Excel) |
 | Módulo adicional       | optimizer.py (incluso no projeto)            |
 | Resolução de tela      | Mínimo 1400 × 900 pixels (recomendado 2100+ de largura para ver a tabela da Auto-Otimização inteira) |
 | Formato de dados       | Planilha Excel (.xlsx ou .xls) e CSV         |
@@ -89,11 +89,21 @@ A planilha deve seguir o seguinte padrão:
 
 ⚠️ Se a taxa de referência for detectada automaticamente, o campo de taxa manual na aba Configuração é desabilitado. Se não for detectada, o campo manual permanece disponível para entrada manual do valor acumulado no período.
 
-## 3.2.1 Importar do Yahoo Finance (Online)
+## 3.2.1 Fontes Online (Yahoo, B3 e Excel)
 
-Em vez de montar a planilha à mão, você pode baixar as cotações direto do Yahoo Finance pelo botão **🌐 Importar do Yahoo Finance**. O resultado alimenta o programa exatamente como uma planilha carregada — mesmo fluxo daí em diante.
+Além de carregar uma planilha, o programa busca cotações **direto da internet** por três fontes. Qualquer uma delas alimenta o programa exatamente como uma planilha carregada — mesmo fluxo daí em diante (detecção da taxa de referência, lista de ativos e janelas temporais). Todas produzem preços de fechamento (ou o tipo escolhido), e a transformação para base zero é feita internamente ao processar o período.
 
-Na janela que abre:
+| **Fonte**            | **Botão**                          | **Melhor para**                                  | **Requisito**                         |
+| -------------------- | ---------------------------------- | ------------------------------------------------ | ------------------------------------- |
+| Yahoo Finance        | 🌐 Importar do Yahoo Finance       | Ações internacionais, cripto, uso rápido          | `yfinance`                            |
+| B3 (COTAHIST)        | 🇧🇷 Importar da B3 (COTAHIST)      | Ações e ETFs brasileiros (fonte oficial)          | `requests`                            |
+| Excel (STOCKHISTORY) | 📊 Importar via Excel (renda fixa) | ETFs de renda fixa que o COTAHIST não cobre       | Windows + Excel 365 + `xlwings`       |
+
+💡 As fontes da B3 e via Excel usam dados oficiais/institucionais, mais confiáveis que o Yahoo para o mercado brasileiro.
+
+### Importar do Yahoo Finance
+
+Baixe cotações pelo botão **🌐 Importar do Yahoo Finance**. Na janela que abre:
 
 - **📝 Símbolos dos Ativos:** um código por linha (ex.: `PETR4`, `VALE3`, `ITUB4`). Mínimo de 2.
 - **🏷️ Tipo de ativo:** define o sufixo acrescentado automaticamente ao código.
@@ -116,6 +126,29 @@ Clique em **🚀 Buscar e Importar**. Uma barra de progresso mostra o andamento 
 ⚠️ **Requer a biblioteca `yfinance`** (`pip install yfinance`). Sem ela o aplicativo funciona normalmente, apenas esse botão exibe um aviso explicando como instalar.
 
 💡 Os dados vêm como **preços de fechamento**, exatamente o formato que o programa espera — a transformação para base zero continua sendo feita internamente ao processar o período.
+
+### Importar da B3 (COTAHIST) — fontes nacionais
+
+O botão **🇧🇷 Importar da B3 (COTAHIST)** baixa os arquivos anuais oficiais da B3 (mercado à vista) e monta a série de preços dos ativos pedidos. Por ser a fonte oficial da bolsa brasileira, é mais confiável que o Yahoo para ações e ETFs negociados na B3.
+
+A janela é parecida com a do Yahoo, com alguns campos próprios:
+
+- **📝 Símbolos:** os códigos exatamente como negociados na B3 (ex.: `PETR4`, `VALE3`, `BOVA11`).
+- **💰 Preço:** Abertura, Máximo, Mínimo ou **Fechamento** (padrão).
+- **🧹 Elimina após N dias sem dado:** regra de limpeza (padrão 10). Se um ativo ficar mais de N pregões seguidos sem cotação, é descartado; lacunas menores são preenchidas com o preço do dia anterior. Ativos sem cotação na primeira data também são descartados.
+- **🏛️ Ativo de Referência** e **📅 Período:** iguais aos do Yahoo.
+
+⚠️ O primeiro download de cada ano é **grande** (dezenas de MB) e pode levar de segundos a minutos — a janela pode parecer parada enquanto baixa cada ano. A barra de progresso avança a cada ano concluído.
+
+⚠️ Requer a biblioteca **`requests`** (normalmente já instalada). Cobre bem ações e a maioria dos ETFs; para **ETFs de renda fixa** que a B3 não cobre bem, use a fonte via Excel abaixo.
+
+### Importar via Excel (renda fixa) — fonte complementar
+
+O botão **📊 Importar via Excel (renda fixa)** usa a função `STOCKHISTORY` do Excel (dados LSEG/Refinitiv) para buscar os ETFs de renda fixa que o COTAHIST não cobre bem (ex.: `FIXA11`, `IMAB11`, `B5P211`, `IRFM11`). Os campos são os mesmos da importação da B3.
+
+⚠️ **Requisitos específicos:** Windows com **Excel 365** instalado e logado, e a biblioteca **`xlwings`** (`pip install xlwings`). É a única fonte que não roda em Linux/macOS. Sem esses requisitos, o botão abre normalmente mas a busca informa o que está faltando.
+
+💡 **Fonte complementar, não substituta:** use a B3 como fonte principal e o Excel só para os códigos de renda fixa que faltarem. Não misture as duas fontes na mesma carteira — os preços têm origens diferentes (B3 vs LSEG).
 
 ## 3.3 Configurar Janelas Temporais
 

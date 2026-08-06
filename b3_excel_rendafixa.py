@@ -292,7 +292,7 @@ def _buscar_um(sht, app, simbolo: str, d1, d2, code: int,
 
 
 def fetch_excel_wide(tickers, data_ini, data_fim, tipo_preco,
-                     prefixos=None, timeout=30.0, visivel=False):
+                     prefixos=None, timeout=30.0, visivel=False, progress=None):
     """
     Retorna (wide_df, falhas):
       wide_df: DataFrame [Data, TICKER1, TICKER2, ...] no formato da B3.
@@ -320,7 +320,9 @@ def fetch_excel_wide(tickers, data_ini, data_fim, tipo_preco,
     try:
         wb = app.books.add()
         sht = wb.sheets[0]
-        for tk in tickers:
+        for idx, tk in enumerate(tickers):
+            if progress is not None:                      # callback opcional p/ GUI
+                progress(idx, len(tickers), tk)
             print(f"  Excel → buscando {tk}...")
             parcial = _buscar_um(sht, app, tk, d1, d2, code, prefixos, timeout)
             if parcial is None:
@@ -329,6 +331,8 @@ def fetch_excel_wide(tickers, data_ini, data_fim, tipo_preco,
                 continue
             resultado = parcial if resultado is None else \
                 resultado.merge(parcial, on="Data", how="outer")
+        if progress is not None:
+            progress(len(tickers), len(tickers), None)
     finally:
         wb.close()
         app.quit()
