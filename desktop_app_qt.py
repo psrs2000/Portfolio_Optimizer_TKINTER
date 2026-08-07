@@ -660,15 +660,26 @@ def fetch_yahoo_prices(simbolos, data_inicio, data_fim, sufixo=".SA", progress=N
     return dados, erros
 
 
-def consolidate_yahoo_prices(dados_historicos):
-    """Junta os fechamentos ('Close') num único DataFrame indexado por data."""
+# Tipo de preço escolhido pelo usuário -> coluna correspondente no yfinance.
+# Os mesmos quatro tipos oferecidos pelas fontes B3 e Excel.
+YAHOO_PRICE_COLS = {
+    "Abertura": "Open",
+    "Máximo": "High",
+    "Mínimo": "Low",
+    "Fechamento": "Close",
+}
+
+
+def consolidate_yahoo_prices(dados_historicos, tipo_preco="Fechamento"):
+    """Junta o preço escolhido de cada ativo num único DataFrame por data."""
     if not dados_historicos:
         return None
 
+    coluna = YAHOO_PRICE_COLS.get(tipo_preco, "Close")
     series = []
     for simbolo, hist in dados_historicos.items():
-        if 'Close' in hist.columns and not hist['Close'].empty:
-            df_temp = pd.DataFrame({simbolo: hist['Close']})
+        if coluna in hist.columns and not hist[coluna].empty:
+            df_temp = pd.DataFrame({simbolo: hist[coluna]})
             # Yahoo devolve índice com fuso; remover evita conflito ao mesclar
             if getattr(df_temp.index, 'tz', None) is not None:
                 df_temp.index = df_temp.index.tz_localize(None)
@@ -680,6 +691,65 @@ def consolidate_yahoo_prices(dados_historicos):
     consolidado = pd.concat(series, axis=1, sort=True)
     consolidado.index.name = "Data"
     return consolidado
+
+
+def _maior_sequencia_true(valores):
+    """Maior quantidade de True consecutivos numa sequência booleana."""
+    maior = atual = 0
+    for v in valores:
+        atual = atual + 1 if v else 0
+        if atual > maior:
+            maior = atual
+    return maior
+
+
+def limpar_series_precos(wide, k=10):
+    """
+    Limpeza CANÔNICA das séries de preços — usada por TODAS as fontes online
+    (Yahoo, B3 e Excel), para que se comportem exatamente igual.
+
+    Entrada: DataFrame Data × Ativos, ordenado por Data.
+    Saída:   (wide_limpo, relatorio)
+
+    Passo 0 - valor 0 é tratado como "sem dado" (vira vazio).
+    Regra 1 - coluna sem dado na 1ª data (primeira linha) é excluída.
+    Regra 2 - coluna com MAIS de k vazios consecutivos é excluída.
+    Regra 3 - vazios restantes recebem o valor do dia anterior (forward fill).
+
+    A ORDEM importa: as regras 1 e 2 olham os vazios ANTES do preenchimento;
+    a 3 vem por último. Se o preenchimento viesse antes, não haveria mais
+    buracos para as regras 1 e 2 avaliarem.
+
+    Sem isso, lacunas sobrevivem como NaN e o otimizador (que faz dropna nas
+    linhas) descartaria a data inteira para TODOS os ativos por causa de um só.
+    """
+    df = wide.copy()
+    tickers = [c for c in df.columns if c != "Data"]
+    if not tickers or len(df) == 0:
+        return df, {"regra1": [], "regra2": [], "mantidos": tickers, "k": k}
+
+    # Passo 0: garante numérico e trata 0 como ausente
+    precos = df[tickers].apply(pd.to_numeric, errors="coerce")
+    precos = precos.mask(precos == 0)
+    ausente = precos.isna()
+
+    # Regra 1: sem dado na primeira linha
+    primeira = ausente.iloc[0]
+    rem1 = [t for t in tickers if bool(primeira[t])]
+
+    # Regra 2: mais de k vazios consecutivos (avaliada só nas que passaram na 1)
+    rem2 = [t for t in tickers
+            if t not in rem1 and _maior_sequencia_true(ausente[t].tolist()) > k]
+
+    remover = set(rem1) | set(rem2)
+    manter = [t for t in tickers if t not in remover]
+
+    # Regra 3: preenche o que sobrou com o valor do dia anterior
+    limpo = pd.concat([df[["Data"]], precos[manter]], axis=1)
+    if manter:
+        limpo[manter] = limpo[manter].ffill()
+
+    return limpo, {"regra1": rem1, "regra2": rem2, "mantidos": manter, "k": k}
 
 
 def promote_reference_column(df, ativo_referencia):
@@ -701,12 +771,12 @@ def promote_reference_column(df, ativo_referencia):
     return df[['Data', nome_ref] + outras], nome_ref
 
 
-def build_yahoo_dataframe(dados_historicos, ativo_referencia=None):
+def build_yahoo_dataframe(dados_historicos, ativo_referencia=None, tipo_preco="Fechamento"):
     """
     Monta o DataFrame no layout que o aplicativo espera:
     Data | Taxa_Ref_<ATIVO> (opcional) | demais ativos...
     """
-    consolidado = consolidate_yahoo_prices(dados_historicos)
+    consolidado = consolidate_yahoo_prices(dados_historicos, tipo_preco)
     if consolidado is None:
         return None, None
     df = consolidado.reset_index()
@@ -725,199 +795,6 @@ class _SortableItem(QTableWidgetItem):
             except (TypeError, ValueError):
                 pass
         return self.text() < other.text()
-
-
-class YahooImportDialog(QDialog):
-    """
-    Diálogo de importação de cotações do Yahoo Finance.
-
-    Ao ser aceito, expõe:
-      result_df  -> DataFrame pronto (Data | Taxa_Ref_X | ativos...)
-      nome_ref   -> nome da coluna de referência criada (ou None)
-      erros      -> símbolos sem dados suficientes
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("🌐 Importar do Yahoo Finance")
-        self.setMinimumSize(600, 660)
-
-        self.result_df = None
-        self.nome_ref = None
-        self.erros = []
-        self.origem_desc = "Yahoo Finance"
-
-        layout = QVBoxLayout(self)
-
-        # ----- Símbolos -----
-        sym_box = QGroupBox("📝 Símbolos dos Ativos (um por linha)")
-        sym_l = QVBoxLayout(sym_box)
-        self.symbols_edit = QPlainTextEdit()
-        self.symbols_edit.setPlainText("PETR4\nVALE3\nITUB4\nBBDC4\nABEV3")
-        self.symbols_edit.setFixedHeight(120)
-        sym_l.addWidget(self.symbols_edit)
-        layout.addWidget(sym_box)
-
-        # ----- Tipo de ativo -----
-        tipo_row = QHBoxLayout()
-        tipo_row.addWidget(QLabel("🏷️ Tipo de ativo:"))
-        self.tipo_combo = QComboBox()
-        for nome, _ in YAHOO_ASSET_TYPES:
-            self.tipo_combo.addItem(nome)
-        self.tipo_combo.currentIndexChanged.connect(self._update_tipo_hint)
-        tipo_row.addWidget(self.tipo_combo, 1)
-        layout.addLayout(tipo_row)
-
-        self.tipo_hint = QLabel("")
-        self.tipo_hint.setStyleSheet("color: gray;")
-        self.tipo_hint.setWordWrap(True)
-        layout.addWidget(self.tipo_hint)
-
-        # ----- Ativo de referência -----
-        ref_box = QGroupBox("🏛️ Ativo de Referência (benchmark / taxa livre)")
-        ref_l = QVBoxLayout(ref_box)
-        ref_row = QHBoxLayout()
-        chk_ref = QCheckBox("Incluir")
-        chk_ref.setChecked(True)
-        self.use_ref = BoolVar(chk_ref)
-        ref_row.addWidget(chk_ref)
-        self.ref_entry = QLineEdit("BOVA11")
-        self.ref_entry.setFixedWidth(140)
-        ref_row.addWidget(self.ref_entry)
-        ref_row.addStretch()
-        ref_l.addLayout(ref_row)
-        hint_ref = QLabel(
-            "Sugestões: BOVA11 (Ibovespa), LFTS11 (CDI), SMAL11 (Small Caps), IVV (S&P 500).\n"
-            "O ativo escolhido vira a coluna de referência e é detectado automaticamente.")
-        hint_ref.setStyleSheet("color: gray;")
-        hint_ref.setWordWrap(True)
-        ref_l.addWidget(hint_ref)
-        layout.addWidget(ref_box)
-
-        # ----- Período -----
-        per_box = QGroupBox("📅 Período")
-        per_l = QHBoxLayout(per_box)
-        per_l.addWidget(QLabel("Início:"))
-        self.date_ini = DateEntry()
-        self.date_ini.set_date(date.today() - timedelta(days=365 * 3))
-        self.date_ini.setMaximumDate(QDate.currentDate())
-        per_l.addWidget(self.date_ini)
-        per_l.addSpacing(20)
-        per_l.addWidget(QLabel("Fim:"))
-        self.date_fim = DateEntry()
-        self.date_fim.set_date(date.today())
-        self.date_fim.setMaximumDate(QDate.currentDate())
-        per_l.addWidget(self.date_fim)
-        per_l.addStretch()
-        layout.addWidget(per_box)
-
-        # ----- Progresso -----
-        self.progress = QProgressBar()
-        self.progress.setVisible(False)
-        layout.addWidget(self.progress)
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-
-        # ----- Botões -----
-        btns = QHBoxLayout()
-        self.btn_fetch = QPushButton("🚀 Buscar e Importar")
-        self.btn_fetch.setStyleSheet(
-            "QPushButton { background-color: #0078d4; color: white; font-weight: bold; padding: 8px; }")
-        self.btn_fetch.clicked.connect(self._fetch)
-        btns.addWidget(self.btn_fetch)
-        btn_cancel = QPushButton("Cancelar")
-        btn_cancel.clicked.connect(self.reject)
-        btns.addWidget(btn_cancel)
-        layout.addLayout(btns)
-
-        self._update_tipo_hint()
-
-    def _sufixo(self):
-        return YAHOO_ASSET_TYPES[self.tipo_combo.currentIndex()][1]
-
-    def _update_tipo_hint(self):
-        sufixo = self._sufixo()
-        if sufixo == "LIVRE":
-            self.tipo_hint.setText(
-                "🔥 Modo códigos livres: digite exatamente como aparece no Yahoo "
-                "(ex.: PETR4.SA, MSFT, BTC-USD). Nenhum sufixo é acrescentado.")
-        elif sufixo:
-            self.tipo_hint.setText(
-                f"O sufixo '{sufixo}' é acrescentado automaticamente (ex.: PETR4 → PETR4{sufixo}). "
-                "Códigos que já contenham ponto são usados como digitados.")
-        else:
-            self.tipo_hint.setText(
-                "Os códigos são usados como digitados (ex.: MSFT, AAPL, BTC-USD).")
-
-    def _fetch(self):
-        simbolos = [s.strip().upper() for s in self.symbols_edit.toPlainText().split('\n') if s.strip()]
-        if len(simbolos) < 2:
-            messagebox.showerror("Erro", "Digite pelo menos 2 símbolos.")
-            return
-
-        d_ini, d_fim = self.date_ini.get_date(), self.date_fim.get_date()
-        if d_ini >= d_fim:
-            messagebox.showerror("Erro", "A data de início deve ser anterior à data de fim.")
-            return
-
-        ativo_ref = self.ref_entry.text().strip().upper() if self.use_ref.get() else None
-
-        # O ativo de referência entra na mesma busca dos demais
-        busca = list(simbolos)
-        if ativo_ref and ativo_ref not in busca:
-            busca.append(ativo_ref)
-
-        self.btn_fetch.setEnabled(False)
-        self.progress.setVisible(True)
-        self.progress.setMaximum(len(busca))
-
-        def _progress(i, total, simbolo):
-            self.progress.setValue(i)
-            self.status.setText(f"Buscando {simbolo}... ({min(i + 1, total)}/{total})" if simbolo else "Consolidando...")
-            QApplication.processEvents()
-
-        try:
-            dados, erros = fetch_yahoo_prices(busca, d_ini, d_fim,
-                                              sufixo=self._sufixo(), progress=_progress)
-        except Exception as e:
-            self.progress.setVisible(False)
-            self.btn_fetch.setEnabled(True)
-            self.status.setText("")
-            messagebox.showerror("Erro", f"Falha ao consultar o Yahoo Finance:\n{str(e)}")
-            return
-
-        self.progress.setVisible(False)
-        self.btn_fetch.setEnabled(True)
-        self.status.setText("")
-
-        if not dados:
-            messagebox.showerror(
-                "Erro",
-                "Nenhum dado encontrado.\n\nVerifique os símbolos e o tipo de ativo "
-                "(ações brasileiras normalmente exigem o sufixo .SA).")
-            return
-
-        # Se a referência falhou, avisa: sem ela os objetivos de excesso somem
-        if ativo_ref and ativo_ref not in dados:
-            messagebox.showwarning(
-                "Referência não encontrada",
-                f"Não foi possível obter dados de '{ativo_ref}'.\n\n"
-                "A importação segue sem taxa de referência — os objetivos que "
-                "dependem dela ficarão indisponíveis.")
-            ativo_ref = None
-
-        df, nome_ref = build_yahoo_dataframe(dados, ativo_ref)
-        if df is None or df.empty:
-            messagebox.showerror("Erro", "Não foi possível consolidar os preços obtidos.")
-            return
-
-        n_ativos = len(df.columns) - 1
-        self.result_df = df
-        self.nome_ref = nome_ref
-        self.erros = erros
-        self.origem_desc = f"Yahoo Finance ({n_ativos} séries)"
-        self.accept()
 
 
 class _PriceImportDialog(QDialog):
@@ -981,6 +858,10 @@ class _PriceImportDialog(QDialog):
         opts.addStretch()
         layout.addLayout(opts)
 
+        # Ponto de extensão: campos próprios de cada fonte (ex.: o tipo de
+        # ativo/sufixo do Yahoo). Por padrão não acrescenta nada.
+        self._extra_widgets(layout)
+
         # ----- Ativo de referência -----
         ref_box = QGroupBox("🏛️ Ativo de Referência (benchmark / taxa livre)")
         ref_l = QVBoxLayout(ref_box)
@@ -1040,6 +921,10 @@ class _PriceImportDialog(QDialog):
         layout.addLayout(btns)
 
     # ---- pontos de personalização das subclasses ----
+    def _extra_widgets(self, layout):
+        """Campos adicionais específicos da fonte. Padrão: nenhum."""
+        pass
+
     def default_symbols(self):
         return "PETR4\nVALE3\nITUB4\nBBDC4\nABEV3"
 
@@ -1122,6 +1007,69 @@ class _PriceImportDialog(QDialog):
         self.accept()
 
 
+class YahooImportDialog(_PriceImportDialog):
+    """
+    Importa cotações do Yahoo Finance.
+
+    Usa a MESMA base das fontes B3/Excel, então herda de graça o tipo de preço,
+    a regra de limpeza (k), o ativo de referência e o relatório — o que antes
+    era diferente entre as fontes. O campo próprio daqui é o tipo de ativo,
+    que define o sufixo do código (.SA, sem sufixo ou livre).
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            titulo="🌐 Importar do Yahoo Finance",
+            banner=None)
+        self.progress_label = "Buscando"
+
+    def _extra_widgets(self, layout):
+        tipo_row = QHBoxLayout()
+        tipo_row.addWidget(QLabel("🏷️ Tipo de ativo:"))
+        self.tipo_combo = QComboBox()
+        for nome, _ in YAHOO_ASSET_TYPES:
+            self.tipo_combo.addItem(nome)
+        self.tipo_combo.currentIndexChanged.connect(self._update_tipo_hint)
+        tipo_row.addWidget(self.tipo_combo, 1)
+        layout.addLayout(tipo_row)
+
+        self.tipo_hint = QLabel("")
+        self.tipo_hint.setStyleSheet("color: gray;")
+        self.tipo_hint.setWordWrap(True)
+        layout.addWidget(self.tipo_hint)
+        self._update_tipo_hint()
+
+    def _sufixo(self):
+        return YAHOO_ASSET_TYPES[self.tipo_combo.currentIndex()][1]
+
+    def _update_tipo_hint(self):
+        sufixo = self._sufixo()
+        if sufixo == "LIVRE":
+            self.tipo_hint.setText(
+                "🔥 Modo códigos livres: digite exatamente como aparece no Yahoo "
+                "(ex.: PETR4.SA, MSFT, BTC-USD). Nenhum sufixo é acrescentado.")
+        elif sufixo:
+            self.tipo_hint.setText(
+                f"O sufixo '{sufixo}' é acrescentado automaticamente (ex.: PETR4 → PETR4{sufixo}). "
+                "Códigos que já contenham ponto são usados como digitados.")
+        else:
+            self.tipo_hint.setText(
+                "Os códigos são usados como digitados (ex.: MSFT, AAPL, BTC-USD).")
+
+    def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
+        dados, erros = fetch_yahoo_prices(simbolos, d_ini, d_fim,
+                                          sufixo=self._sufixo(), progress=progress)
+        if not dados:
+            return None, erros, None
+        consolidado = consolidate_yahoo_prices(dados, tipo_preco)
+        if consolidado is None:
+            return None, erros, None
+        wide = consolidado.reset_index()
+        wide, relatorio = limpar_series_precos(wide, k=k)
+        return wide, erros, relatorio
+
+
 class B3ImportDialog(_PriceImportDialog):
     """Importa cotações da B3 (arquivos COTAHIST anuais)."""
 
@@ -1139,7 +1087,8 @@ class B3ImportDialog(_PriceImportDialog):
                                   somente_vista=b3src.SOMENTE_VISTA, progress=progress)
         wide, faltantes = b3src.montar_planilha(
             df, simbolos, tipo_preco, d_ini, d_fim, somente_vista=b3src.SOMENTE_VISTA)
-        wide, relatorio = b3src.limpar_dados(wide, k=k)
+        # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
+        wide, relatorio = limpar_series_precos(wide, k=k)
         return wide, faltantes, relatorio
 
 
@@ -1165,7 +1114,8 @@ class ExcelRFImportDialog(_PriceImportDialog):
     def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
         wide, faltantes = rfsrc.fetch_excel_wide(
             simbolos, d_ini, d_fim, tipo_preco, visivel=False, progress=progress)
-        wide, relatorio = rfsrc.limpar_dados(wide, k=k)
+        # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
+        wide, relatorio = limpar_series_precos(wide, k=k)
         return wide, faltantes, relatorio
 
 

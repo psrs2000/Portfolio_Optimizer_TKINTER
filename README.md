@@ -101,11 +101,29 @@ Além de carregar uma planilha, o programa busca cotações **direto da internet
 
 💡 As fontes da B3 e via Excel usam dados oficiais/institucionais, mais confiáveis que o Yahoo para o mercado brasileiro.
 
+### Regras de limpeza (iguais nas três fontes)
+
+Toda importação online passa pelas **mesmas três regras**, aplicadas **nesta ordem** sobre a matriz Data × Ativos:
+
+| **Ordem** | **Regra**                                                                 |
+| --------- | ------------------------------------------------------------------------- |
+| 0         | Valor **zero** conta como "sem dado".                                     |
+| 1         | Coluna **sem dado na primeira data** → o ativo é **excluído**.            |
+| 2         | Coluna com mais de **k** registros consecutivos sem dado → **excluída**.  |
+| 3         | Lacunas restantes → preenchidas com o **valor do dia anterior**.          |
+
+O valor de **k** é o campo **🧹 Elimina após N dias sem dado** (padrão 10), presente nas três janelas de importação junto com o tipo de preço e o período.
+
+⚠️ **A ordem importa:** as regras 1 e 2 avaliam os buracos **antes** do preenchimento; a regra 3 vem por último. Se o preenchimento viesse antes, não sobrariam buracos para as regras 1 e 2 analisarem.
+
+💡 **Por que isso importa:** sem a regra 3, lacunas chegariam como vazio ao otimizador, que descarta a **linha inteira** quando qualquer ativo falta — ou seja, um único ativo com falha eliminaria aquela data para **todos** os demais. As exclusões efetuadas pelas regras 1 e 2 são informadas na mensagem ao final da importação.
+
 ### Importar do Yahoo Finance
 
 Baixe cotações pelo botão **🌐 Importar do Yahoo Finance**. Na janela que abre:
 
 - **📝 Símbolos dos Ativos:** um código por linha (ex.: `PETR4`, `VALE3`, `ITUB4`). Mínimo de 2.
+- **💰 Preço** e **🧹 Elimina após N dias sem dado:** iguais aos das outras fontes (ver regras de limpeza acima).
 - **🏷️ Tipo de ativo:** define o sufixo acrescentado automaticamente ao código.
 
 | **Tipo**                 | **Comportamento**                                                         |
@@ -121,7 +139,7 @@ Clique em **🚀 Buscar e Importar**. Uma barra de progresso mostra o andamento 
 
 💡 Códigos que já contenham ponto (ex.: `PETR4.SA`) são usados como digitados, mesmo no modo com sufixo — não vira `PETR4.SA.SA`.
 
-⚠️ Séries com menos de 6 pregões no período são descartadas, e os símbolos sem dados são listados ao final. Se o **ativo de referência** falhar, a importação continua sem ele e o programa avisa — nesse caso os objetivos que dependem da referência ficam indisponíveis.
+⚠️ Séries com menos de 6 pregões no período são descartadas já na busca, e os símbolos sem dados são listados ao final; o que sobrar ainda passa pelas três regras de limpeza. Se o **ativo de referência** não sobreviver (não retornou ou foi excluído na limpeza), a importação continua sem ele e o programa avisa — nesse caso os objetivos que dependem da referência ficam indisponíveis.
 
 ⚠️ **Requer a biblioteca `yfinance`** (`pip install yfinance`). Sem ela o aplicativo funciona normalmente, apenas esse botão exibe um aviso explicando como instalar.
 
