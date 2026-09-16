@@ -72,6 +72,14 @@ except Exception as _e:
     rfsrc, EXCELRF_OK = None, False
     EXCELRF_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
+# CVM (fundos de investimento): baixa os dados abertos da CVM; requer 'requests'.
+try:
+    import cvm_fundos as cvmsrc
+    CVM_OK, CVM_IMPORT_ERROR = True, None
+except Exception as _e:
+    cvmsrc, CVM_OK = None, False
+    CVM_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+
 # Sentinela equivalente ao tk.END, usado pelo adaptador de listbox
 END = "end"
 
@@ -797,6 +805,57 @@ class _SortableItem(QTableWidgetItem):
         return self.text() < other.text()
 
 
+def _escolher_referencia(parent, candidatos):
+    """
+    Pergunta qual dos ativos obtidos deve servir de referência (benchmark).
+
+    Usado pelas fontes em que os nomes só são conhecidos DEPOIS da busca — caso
+    dos fundos da CVM, cujos nomes vêm do cadastro. Devolve o nome escolhido ou
+    None (usuário optou por seguir sem referência).
+    """
+    if not candidatos:
+        return None
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("🏛️ Escolher Ativo de Referência")
+    dlg.setMinimumSize(640, 420)
+    lay = QVBoxLayout(dlg)
+
+    lay.addWidget(QLabel(
+        "Escolha qual dos ativos obtidos servirá de <b>referência</b> (benchmark).<br>"
+        "Ele sai da carteira e passa a ser a taxa de referência, habilitando os "
+        "objetivos de excesso.<br>Um fundo referenciado DI costuma ser a melhor escolha."))
+
+    lista = QListWidget()
+    lista.addItems(candidatos)
+    lista.setCurrentRow(0)
+    lay.addWidget(lista, 1)
+
+    escolha = {'valor': None}
+
+    btns = QHBoxLayout()
+    b_ok = QPushButton("✅ Usar como referência")
+    b_ok.setStyleSheet(
+        "QPushButton { background-color: #0078d4; color: white; font-weight: bold; padding: 8px; }")
+
+    def _ok():
+        item = lista.currentItem()
+        escolha['valor'] = item.text() if item else None
+        dlg.accept()
+
+    b_ok.clicked.connect(_ok)
+    btns.addWidget(b_ok)
+    b_sem = QPushButton("Seguir sem referência")
+    b_sem.clicked.connect(dlg.reject)
+    btns.addWidget(b_sem)
+    lay.addLayout(btns)
+
+    lista.itemDoubleClicked.connect(lambda _i: _ok())
+
+    dlg.exec_()
+    return escolha['valor']
+
+
 class _PriceImportDialog(QDialog):
     """
     Base dos diálogos de importação por PREÇO (B3 e Excel/renda fixa), que
@@ -809,7 +868,8 @@ class _PriceImportDialog(QDialog):
     """
     progress_label = "Buscando"
 
-    def __init__(self, parent=None, titulo="Importar", banner=None):
+    def __init__(self, parent=None, titulo="Importar", banner=None,
+                 mostrar_preco=True, ref_por_lista=False):
         super().__init__(parent)
         self.setWindowTitle(titulo)
         self.setMinimumSize(600, 680)
@@ -819,6 +879,8 @@ class _PriceImportDialog(QDialog):
         self.erros = []
         self.relatorio = None
         self.origem_desc = titulo
+        self.mostrar_preco = mostrar_preco
+        self.ref_por_lista = ref_por_lista   # referência escolhida APÓS a busca
 
         layout = QVBoxLayout(self)
 
@@ -830,7 +892,7 @@ class _PriceImportDialog(QDialog):
             layout.addWidget(lbl_banner)
 
         # ----- Símbolos -----
-        sym_box = QGroupBox("📝 Símbolos dos Ativos (um por linha)")
+        sym_box = QGroupBox(self.symbols_title())
         sym_l = QVBoxLayout(sym_box)
         self.symbols_edit = QPlainTextEdit()
         self.symbols_edit.setPlainText(self.default_symbols())
@@ -840,13 +902,15 @@ class _PriceImportDialog(QDialog):
 
         # ----- Tipo de preço + limpeza -----
         opts = QHBoxLayout()
-        opts.addWidget(QLabel("💰 Preço:"))
-        self.preco_combo = QComboBox()
-        for nome in ("Abertura", "Máximo", "Mínimo", "Fechamento"):
-            self.preco_combo.addItem(nome)
-        self.preco_combo.setCurrentText("Fechamento")
-        opts.addWidget(self.preco_combo)
-        opts.addSpacing(20)
+        self.preco_combo = None
+        if mostrar_preco:
+            opts.addWidget(QLabel("💰 Preço:"))
+            self.preco_combo = QComboBox()
+            for nome in ("Abertura", "Máximo", "Mínimo", "Fechamento"):
+                self.preco_combo.addItem(nome)
+            self.preco_combo.setCurrentText("Fechamento")
+            opts.addWidget(self.preco_combo)
+            opts.addSpacing(20)
         opts.addWidget(QLabel("🧹 Elimina após N dias sem dado:"))
         self.k_spin = QSpinBox()
         self.k_spin.setRange(1, 999)
@@ -870,14 +934,21 @@ class _PriceImportDialog(QDialog):
         chk_ref.setChecked(True)
         self.use_ref = BoolVar(chk_ref)
         ref_row.addWidget(chk_ref)
-        self.ref_entry = QLineEdit(self.default_reference())
-        self.ref_entry.setFixedWidth(140)
-        ref_row.addWidget(self.ref_entry)
+        self.ref_entry = None
+        if not ref_por_lista:
+            self.ref_entry = QLineEdit(self.default_reference())
+            self.ref_entry.setFixedWidth(140)
+            ref_row.addWidget(self.ref_entry)
         ref_row.addStretch()
         ref_l.addLayout(ref_row)
-        hint = QLabel(
-            "O ativo escolhido é buscado junto, vira a coluna de referência "
-            "(Taxa_Ref_<código>) e habilita os objetivos de excesso.")
+        if ref_por_lista:
+            texto_ref = ("Ao final da busca você escolherá, na lista dos que foram "
+                         "obtidos, qual serve de referência. Ele vira a coluna "
+                         "Taxa_Ref_<nome> e habilita os objetivos de excesso.")
+        else:
+            texto_ref = ("O ativo escolhido é buscado junto, vira a coluna de referência "
+                         "(Taxa_Ref_<código>) e habilita os objetivos de excesso.")
+        hint = QLabel(texto_ref)
         hint.setStyleSheet("color: gray;")
         hint.setWordWrap(True)
         ref_l.addWidget(hint)
@@ -928,6 +999,9 @@ class _PriceImportDialog(QDialog):
     def default_symbols(self):
         return "PETR4\nVALE3\nITUB4\nBBDC4\nABEV3"
 
+    def symbols_title(self):
+        return "📝 Símbolos dos Ativos (um por linha)"
+
     def default_reference(self):
         return "BOVA11"
 
@@ -948,12 +1022,16 @@ class _PriceImportDialog(QDialog):
             messagebox.showerror("Erro", "A data de início deve ser anterior à data de fim.")
             return
 
-        ativo_ref = self.ref_entry.text().strip().upper() if self.use_ref.get() else None
+        # Referência: por campo de texto (buscada junto) ou escolhida da lista
+        # depois da busca (ver adiante). No 2º caso nada é acrescentado à busca.
+        ativo_ref = None
+        if self.use_ref.get() and self.ref_entry is not None:
+            ativo_ref = self.ref_entry.text().strip().upper()
         busca = list(simbolos)
         if ativo_ref and ativo_ref not in busca:
             busca.append(ativo_ref)
 
-        tipo_preco = self.preco_combo.currentText()
+        tipo_preco = self.preco_combo.currentText() if self.preco_combo is not None else "Fechamento"
         k = self.k_spin.value()
 
         self.btn_fetch.setEnabled(False)
@@ -986,6 +1064,12 @@ class _PriceImportDialog(QDialog):
             messagebox.showerror(
                 "Erro", "Nenhum dado utilizável foi obtido.\nVerifique os símbolos e o período.")
             return
+
+        # Referência escolhida da LISTA do que efetivamente veio (CVM)
+        if self.ref_por_lista and self.use_ref.get():
+            candidatos = [c for c in wide.columns if c != 'Data']
+            escolhido = _escolher_referencia(self, candidatos)
+            ativo_ref = escolhido  # None = usuário optou por não usar referência
 
         # Se a referência não sobreviveu (não veio, ou saiu na limpeza), avisa
         if ativo_ref and ativo_ref not in wide.columns:
@@ -1114,6 +1198,92 @@ class ExcelRFImportDialog(_PriceImportDialog):
     def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
         wide, faltantes = rfsrc.fetch_excel_wide(
             simbolos, d_ini, d_fim, tipo_preco, visivel=False, progress=progress)
+        # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
+        wide, relatorio = limpar_series_precos(wide, k=k)
+        return wide, faltantes, relatorio
+
+
+class CVMImportDialog(_PriceImportDialog):
+    """
+    Importa cotas diárias de FUNDOS DE INVESTIMENTO dos dados abertos da CVM.
+
+    Diferenças em relação às outras fontes:
+    - os "símbolos" são CNPJs de fundos;
+    - não há tipo de preço (o informe diário traz apenas o valor da cota);
+    - o nome do fundo só é conhecido DEPOIS da busca (vem do cadastro), então a
+      referência é escolhida numa lista ao final.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            titulo="🏦 Importar Fundos (CVM)",
+            banner="Baixa os informes diários dos dados abertos da CVM. Os arquivos são "
+                   "grandes (trazem todos os fundos do país) — a primeira busca de cada "
+                   "mês baixa e guarda em cache; as seguintes reaproveitam o que já está lá.",
+            mostrar_preco=False,     # informe diário só tem VL_QUOTA
+            ref_por_lista=True)      # nomes dos fundos só se sabem após baixar
+        self.progress_label = "CVM"
+        self.setMinimumSize(660, 800)   # tem uma caixa a mais que as outras fontes
+
+    def default_symbols(self):
+        return ""
+
+    def symbols_title(self):
+        return "📝 CNPJs dos Fundos (um por linha, com ou sem pontuação)"
+
+    def _extra_widgets(self, layout):
+        self.symbols_edit.setPlaceholderText(
+            "29.152.383/0001-03\n29152383000103\n\n"
+            "Cole os CNPJs aqui, ou escolha abaixo uma pasta que contenha CNPJ.csv.")
+
+        box = QGroupBox("📁 Pasta de cache dos arquivos da CVM")
+        bl = QVBoxLayout(box)
+        linha = QHBoxLayout()
+        padrao = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cvm_cache")
+        self.cache_entry = QLineEdit(padrao)
+        linha.addWidget(self.cache_entry, 1)
+        b = QPushButton("Procurar...")
+        b.clicked.connect(self._escolher_pasta)
+        linha.addWidget(b)
+        bl.addLayout(linha)
+        hint = QLabel(
+            "Os arquivos baixados ficam aqui e são reaproveitados nas próximas buscas. "
+            "Se existir um CNPJ.csv nesta pasta, os CNPJs são carregados dele.")
+        hint.setStyleSheet("color: gray;")
+        hint.setWordWrap(True)
+        bl.addWidget(hint)
+        layout.addWidget(box)
+        self._carregar_cnpjs_da_pasta(padrao)
+
+    def _escolher_pasta(self):
+        pasta = QFileDialog.getExistingDirectory(
+            self, "Pasta de cache da CVM", self.cache_entry.text())
+        if pasta:
+            self.cache_entry.setText(pasta)
+            self._carregar_cnpjs_da_pasta(pasta)
+
+    def _carregar_cnpjs_da_pasta(self, pasta):
+        """Pré-preenche os CNPJs a partir de um CNPJ.csv, se houver na pasta."""
+        try:
+            caminho = os.path.join(pasta, "CNPJ.csv")
+            if CVM_OK and os.path.exists(caminho):
+                cnpjs = cvmsrc.ler_cnpjs_arquivo(caminho)
+                if cnpjs:
+                    self.symbols_edit.setPlainText("\n".join(cnpjs))
+                    self.status.setText(f"📄 {len(cnpjs)} CNPJs carregados de CNPJ.csv")
+        except Exception:
+            pass   # arquivo ausente ou ilegível: segue com o conteúdo digitado
+
+    def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
+        # Ignora linhas de comentário e mantém só o que tem dígitos de CNPJ
+        cnpjs = [s for s in simbolos
+                 if not s.strip().startswith('#') and len(cvmsrc.so_digitos(s)) >= 14]
+        if len(cnpjs) < 2:
+            raise ValueError("Informe pelo menos 2 CNPJs de fundos válidos.")
+
+        wide, faltantes = cvmsrc.buscar_cotas_fundos(
+            cnpjs, d_ini, d_fim, self.cache_entry.text().strip(), progress=progress)
         # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
         wide, relatorio = limpar_series_precos(wide, k=k)
         return wide, faltantes, relatorio
@@ -1275,6 +1445,11 @@ class PortfolioOptimizerGUI(QMainWindow):
         btn_rf.clicked.connect(self.open_excel_rf_import)
         btn_rf.setToolTip("Fonte complementar: requer Windows + Excel 365 + xlwings")
         load_l.addWidget(btn_rf)
+
+        btn_cvm = QPushButton("🏦 Importar Fundos (CVM)")
+        btn_cvm.clicked.connect(self.open_cvm_import)
+        btn_cvm.setToolTip("Cotas diárias de fundos de investimento, dos dados abertos da CVM")
+        load_l.addWidget(btn_cvm)
 
         # Baixar a base bruta atualmente carregada (de qualquer fonte), para
         # conferência ou ajuste externo. Fica desabilitado até haver dados.
@@ -2665,6 +2840,22 @@ class PortfolioOptimizerGUI(QMainWindow):
                 "Depois reinicie o aplicativo.")
             return
         self._run_import_dialog(ExcelRFImportDialog(self), "Excel (renda fixa)")
+
+    def open_cvm_import(self):
+        """Abre o diálogo de importação de cotas de fundos (dados abertos da CVM)."""
+        if not CVM_OK:
+            messagebox.showerror(
+                "Importação da CVM indisponível",
+                "Não foi possível carregar o módulo de importação da CVM.\n\n"
+                f"Motivo: {CVM_IMPORT_ERROR}\n\n"
+                "Verifique:\n"
+                "• se o arquivo 'cvm_fundos.py' está na MESMA pasta que "
+                "'desktop_app_qt.py';\n"
+                "• se a biblioteca 'requests' está instalada no mesmo Python "
+                "(pip install requests).\n\n"
+                "Depois reinicie o aplicativo.")
+            return
+        self._run_import_dialog(CVMImportDialog(self), "CVM (fundos)")
 
     def _run_import_dialog(self, dlg, fonte):
         """Executa um diálogo de importação e aplica o resultado, se aceito."""

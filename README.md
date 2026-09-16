@@ -16,7 +16,7 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 
 ## 1.1 Principais Funcionalidades
 
-- Carregamento de dados históricos de preços via planilha Excel **ou busca online em várias fontes** (Yahoo Finance, B3/COTAHIST e Excel/STOCKHISTORY).
+- Carregamento de dados históricos de preços via planilha Excel **ou busca online em várias fontes** (Yahoo Finance, B3/COTAHIST, Excel/STOCKHISTORY e CVM/fundos de investimento).
 - Configuração de janelas temporais separadas para otimização e validação.
 - **Oito objetivos de otimização**, incluindo Sharpe, Sortino, Under Water, linearidade e dois objetivos aplicados ao excesso sobre a referência.
 - Restrições globais e individuais de peso por ativo, com importação via arquivo Excel/CSV.
@@ -37,7 +37,7 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 | Sistema Operacional    | Windows 10/11, Linux ou macOS                |
 | Python                 | 3.8 ou superior (recomendado 3.10+)          |
 | Bibliotecas            | PyQt5, pandas, numpy, scipy, matplotlib, openpyxl |
-| Opcional               | yfinance (Yahoo Finance), requests (B3 — normalmente já presente), xlwings + Excel 365/Windows (importação via Excel) |
+| Opcional               | yfinance (Yahoo Finance), requests (B3 e CVM — normalmente já presente), xlwings + Excel 365/Windows (importação via Excel) |
 | Módulo adicional       | optimizer.py (incluso no projeto)            |
 | Resolução de tela      | Mínimo 1400 × 900 pixels (recomendado 2100+ de largura para ver a tabela da Auto-Otimização inteira) |
 | Formato de dados       | Planilha Excel (.xlsx ou .xls) e CSV         |
@@ -89,19 +89,20 @@ A planilha deve seguir o seguinte padrão:
 
 ⚠️ Se a taxa de referência for detectada automaticamente, o campo de taxa manual na aba Configuração é desabilitado. Se não for detectada, o campo manual permanece disponível para entrada manual do valor acumulado no período.
 
-## 3.2.1 Fontes Online (Yahoo, B3 e Excel)
+## 3.2.1 Fontes Online (Yahoo, B3, Excel e CVM)
 
-Além de carregar uma planilha, o programa busca cotações **direto da internet** por três fontes. Qualquer uma delas alimenta o programa exatamente como uma planilha carregada — mesmo fluxo daí em diante (detecção da taxa de referência, lista de ativos e janelas temporais). Todas produzem preços de fechamento (ou o tipo escolhido), e a transformação para base zero é feita internamente ao processar o período.
+Além de carregar uma planilha, o programa busca cotações **direto da internet** por quatro fontes. Qualquer uma delas alimenta o programa exatamente como uma planilha carregada — mesmo fluxo daí em diante (detecção da taxa de referência, lista de ativos e janelas temporais). Todas entregam séries de preços (ou cotas, no caso dos fundos), e a transformação para base zero é feita internamente ao processar o período.
 
 | **Fonte**            | **Botão**                          | **Melhor para**                                  | **Requisito**                         |
 | -------------------- | ---------------------------------- | ------------------------------------------------ | ------------------------------------- |
 | Yahoo Finance        | 🌐 Importar do Yahoo Finance       | Ações internacionais, cripto, uso rápido          | `yfinance`                            |
 | B3 (COTAHIST)        | 🇧🇷 Importar da B3 (COTAHIST)      | Ações e ETFs brasileiros (fonte oficial)          | `requests`                            |
 | Excel (STOCKHISTORY) | 📊 Importar via Excel (renda fixa) | ETFs de renda fixa que o COTAHIST não cobre       | Windows + Excel 365 + `xlwings`       |
+| CVM (fundos)         | 🏦 Importar Fundos (CVM)           | Cotas diárias de fundos de investimento           | `requests`                            |
 
-💡 As fontes da B3 e via Excel usam dados oficiais/institucionais, mais confiáveis que o Yahoo para o mercado brasileiro.
+💡 As fontes da B3, do Excel e da CVM usam dados oficiais/institucionais, mais confiáveis que o Yahoo para o mercado brasileiro.
 
-### Regras de limpeza (iguais nas três fontes)
+### Regras de limpeza (iguais nas quatro fontes)
 
 Toda importação online passa pelas **mesmas três regras**, aplicadas **nesta ordem** sobre a matriz Data × Ativos:
 
@@ -167,6 +168,31 @@ O botão **📊 Importar via Excel (renda fixa)** usa a função `STOCKHISTORY` 
 ⚠️ **Requisitos específicos:** Windows com **Excel 365** instalado e logado, e a biblioteca **`xlwings`** (`pip install xlwings`). É a única fonte que não roda em Linux/macOS. Sem esses requisitos, o botão abre normalmente mas a busca informa o que está faltando.
 
 💡 **Fonte complementar, não substituta:** use a B3 como fonte principal e o Excel só para os códigos de renda fixa que faltarem. Não misture as duas fontes na mesma carteira — os preços têm origens diferentes (B3 vs LSEG).
+
+### Importar Fundos da CVM
+
+O botão **🏦 Importar Fundos (CVM)** traz as **cotas diárias de fundos de investimento** a partir dos dados abertos da CVM. Permite otimizar carteiras de fundos exatamente como se faz com ações — a cota é o "preço" do fundo.
+
+Na janela:
+
+- **📝 CNPJs dos Fundos:** um CNPJ por linha, **com ou sem pontuação** (`29.152.383/0001-03` ou `29152383000103`). Mínimo de 2.
+- **📁 Pasta de cache:** onde os arquivos baixados ficam guardados. Se existir um **`CNPJ.csv`** nessa pasta, os CNPJs são carregados dele automaticamente.
+- **🧹 Elimina após N dias sem dado** e **📅 Período:** iguais às outras fontes.
+- **🏛️ Ativo de Referência:** diferente das demais — como o nome do fundo só é conhecido depois da busca, ao final aparece a **lista dos fundos obtidos** para você escolher qual será a referência. Um fundo *referenciado DI* costuma ser a melhor escolha.
+
+O que é baixado automaticamente:
+
+| **Arquivo**                    | **Origem**                                                        |
+| ------------------------------ | ----------------------------------------------------------------- |
+| Cadastro (nomes dos fundos)    | `.../FI/CAD/DADOS/cad_fi_hist.zip`                                |
+| Informe diário, 2021 em diante | `.../FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_AAAAMM.zip` (mensal)   |
+| Informe diário, antes de 2021  | `.../FI/DOC/INF_DIARIO/DADOS/HIST/inf_diario_fi_AAAA.zip` (anual) |
+
+⚠️ **Os arquivos são grandes** — cada informe diário traz todos os fundos do país. A primeira busca de um período baixa e **guarda em cache**; as buscas seguintes reaproveitam o que já está lá. Um zip anual do histórico traz os 12 meses de uma vez, então basta um download por ano antigo.
+
+💡 **As colunas recebem o nome do fundo** (denominação social vigente no cadastro), que costuma ser longo. É esse nome que aparece na lista de ativos, na composição da carteira e nos gráficos.
+
+💡 O formato dos CSVs da CVM **muda conforme o ano** (nome da coluna de CNPJ, codificação, data em DD/MM/AAAA ou AAAA-MM-DD, decimal com vírgula ou ponto). Tudo isso é tratado automaticamente, e a comparação de CNPJ ignora a pontuação.
 
 ## 3.2.2 Baixar a Base Carregada
 
