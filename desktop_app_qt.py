@@ -826,30 +826,44 @@ class _SortableItem(QTableWidgetItem):
         return self.text() < other.text()
 
 
-def _escolher_referencia(parent, candidatos):
-    """
-    Pergunta qual dos ativos obtidos deve servir de referência (benchmark).
+# Sentinela para "detectar a referência automaticamente" em _apply_raw_data.
+# Precisa ser distinto de None, que ali significa "forçar SEM referência".
+_AUTO_REF = object()
 
-    Usado pelas fontes em que os nomes só são conhecidos DEPOIS da busca — caso
-    dos fundos da CVM, cujos nomes vêm do cadastro. Devolve o nome escolhido ou
-    None (usuário optou por seguir sem referência).
+
+def _escolher_referencia(parent, candidatos, atual=None):
+    """
+    Pergunta qual dos ativos deve servir de referência (benchmark).
+
+    Usado em dois momentos: logo após a busca, nas fontes em que os nomes só são
+    conhecidos depois dela (fundos da CVM, cujos nomes vêm do cadastro), e pela
+    troca de referência sobre uma base já carregada.
+
+    `atual` é a referência vigente, que aparece destacada e já selecionada.
+    Devolve o nome escolhido, ou None se o usuário optar por ficar sem
+    referência (botão "Seguir sem referência").
     """
     if not candidatos:
         return None
 
     dlg = QDialog(parent)
     dlg.setWindowTitle("🏛️ Escolher Ativo de Referência")
-    dlg.setMinimumSize(640, 420)
+    dlg.setMinimumSize(660, 440)
     lay = QVBoxLayout(dlg)
 
-    lay.addWidget(QLabel(
-        "Escolha qual dos ativos obtidos servirá de <b>referência</b> (benchmark).<br>"
-        "Ele sai da carteira e passa a ser a taxa de referência, habilitando os "
-        "objetivos de excesso.<br>Um fundo referenciado DI costuma ser a melhor escolha."))
+    texto = ("Escolha qual ativo servirá de <b>referência</b> (benchmark).<br>"
+             "Ele sai da carteira e passa a ser a taxa de referência, habilitando os "
+             "objetivos de excesso.<br>Um fundo referenciado DI costuma ser a melhor escolha.")
+    if atual:
+        texto += f"<br><br>Referência atual: <b>{atual}</b>"
+    lay.addWidget(QLabel(texto))
 
     lista = QListWidget()
     lista.addItems(candidatos)
-    lista.setCurrentRow(0)
+    if atual and atual in candidatos:
+        lista.setCurrentRow(candidatos.index(atual))
+    else:
+        lista.setCurrentRow(0)
     lay.addWidget(lista, 1)
 
     escolha = {'valor': None}
@@ -1269,9 +1283,10 @@ class CVMImportDialog(_PriceImportDialog):
         linha.addWidget(b)
         bl.addLayout(linha)
         hint = QLabel(
-            "Os arquivos baixados ficam aqui e são reaproveitados nas próximas buscas — "
-            "inclusive depois de fechar o programa. Nada é apagado automaticamente; "
-            "para liberar espaço, apague a pasta à mão.\n"
+            "Os arquivos baixados ficam aqui durante o uso e são reaproveitados "
+            "entre buscas da mesma sessão. Ao FECHAR o programa eles são apagados "
+            "(apenas os baixados — seus próprios arquivos não são tocados).\n"
+            "Para guardar os dados, use o botão \"Baixar Base de Dados Carregada\".\n"
             "Se existir um CNPJ.csv nesta pasta, os CNPJs são carregados dele.")
         hint.setStyleSheet("color: gray;")
         hint.setWordWrap(True)
@@ -1307,6 +1322,10 @@ class CVMImportDialog(_PriceImportDialog):
 
         wide, faltantes = cvmsrc.buscar_cotas_fundos(
             cnpjs, d_ini, d_fim, self.cache_entry.text().strip(), progress=progress)
+        # Registra a pasta usada: ela e limpa ao fechar o programa
+        janela = self.parent()
+        if janela is not None:
+            getattr(janela, 'cvm_caches_usados', set()).add(self.cache_entry.text().strip())
         # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
         wide, relatorio = limpar_series_precos(wide, k=k)
         return wide, faltantes, relatorio
@@ -1338,6 +1357,10 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.short_weights = {}
         self.short_widgets = {}
         self.auto_short_weights = {}   # shorts fixos da Auto-Otimização
+        # Pastas de cache da CVM usadas nesta sessão. Os arquivos baixados são
+        # apagados ao fechar o programa, para não deixar dezenas de MB na
+        # máquina do usuário final (ver closeEvent).
+        self.cvm_caches_usados = set()
 
         # Tabelas mensais
         self.monthly_table = None
@@ -1481,6 +1504,13 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.btn_download_base.setEnabled(False)
         self.btn_download_base.setToolTip("Salva a base bruta atual (Excel ou CSV). Carregue ou importe dados primeiro.")
         load_l.addWidget(self.btn_download_base)
+
+        self.btn_trocar_ref = QPushButton("🏛️ Alterar Ativo de Referência")
+        self.btn_trocar_ref.clicked.connect(self.trocar_referencia)
+        self.btn_trocar_ref.setEnabled(False)
+        self.btn_trocar_ref.setToolTip(
+            "Escolhe outro ativo da base como taxa de referência, sem reimportar.")
+        load_l.addWidget(self.btn_trocar_ref)
 
         left.addWidget(load_box)
 
@@ -1686,7 +1716,8 @@ class PortfolioOptimizerGUI(QMainWindow):
 
                 if self.has_risk_free:
                     try:
-                        temp_optimizer = PortfolioOptimizer(df_base0_otimizacao, [])
+                        temp_optimizer = PortfolioOptimizer(df_base0_otimizacao, [],
+                                                            risk_free_column=self._coluna_referencia())
                         if hasattr(temp_optimizer, 'risk_free_rate_total'):
                             self.detected_risk_free_rate = temp_optimizer.risk_free_rate_total
                     except Exception:
@@ -2485,7 +2516,8 @@ class PortfolioOptimizerGUI(QMainWindow):
                 else:
                     assets_used_in_optimization = selected_assets
 
-                optimizer_to_use = PortfolioOptimizer(self.df_analise, assets_used_in_optimization)
+                optimizer_to_use = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
+                                                      risk_free_column=self._coluna_referencia())
             else:
                 optimizer_to_use = self.optimizer
 
@@ -2678,14 +2710,22 @@ class PortfolioOptimizerGUI(QMainWindow):
             except Exception as e:
                 messagebox.showerror("Erro", f"Erro ao carregar arquivo:\n{str(e)}")
 
-    def _apply_raw_data(self, df, origem):
+    def _apply_raw_data(self, df, origem, referencia=_AUTO_REF):
         """
         Recebe um DataFrame bruto (Data na 1ª coluna) e prepara todo o estado da
         aplicação: detecta a taxa de referência, popula a lista de ativos e
         ajusta as janelas temporais.
 
-        Compartilhado pelo carregamento de planilha e pela importação do Yahoo
-        Finance, para que as duas origens se comportem exatamente igual.
+        Compartilhado por todas as origens (planilha e importações online), para
+        que todas se comportem exatamente igual.
+
+        referencia:
+          _AUTO_REF -> detecta pelo nome da 2ª coluna (comportamento padrão);
+          None      -> força SEM referência;
+          "<nome>"  -> força essa coluna como referência.
+        A forma explícita existe porque a detecção por nome é por palavra-chave
+        e 'ref' aparece dentro de "REFERENCIADO DI" — nome comum de fundo. Ao
+        trocar a referência pela interface, dizemos qual é, sem adivinhação.
         """
         self.dados_brutos = df
 
@@ -2708,17 +2748,25 @@ class PortfolioOptimizerGUI(QMainWindow):
             except Exception:
                 self.periodo_disponivel = None
 
-        # Taxa de referência: 2ª coluna cujo nome contenha um dos termos-chave
-        if len(self.dados_brutos.columns) > 2 and isinstance(self.dados_brutos.columns[1], str):
-            col_name = self.dados_brutos.columns[1].lower()
+        # Taxa de referência: informada explicitamente ou detectada pelo nome
+        colunas = self.dados_brutos.columns.tolist()
+        if referencia is not _AUTO_REF:
+            if referencia and referencia in colunas:
+                self.has_risk_free = True
+                self.risk_free_column_name = referencia
+                asset_columns = [c for c in colunas if c not in ('Data', referencia)]
+            else:
+                asset_columns = [c for c in colunas if c != 'Data']
+        elif len(colunas) > 2 and isinstance(colunas[1], str):
+            col_name = colunas[1].lower()
             if any(term in col_name for term in ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']):
                 self.has_risk_free = True
-                self.risk_free_column_name = self.dados_brutos.columns[1]
-                asset_columns = self.dados_brutos.columns[2:].tolist()
+                self.risk_free_column_name = colunas[1]
+                asset_columns = colunas[2:]
             else:
-                asset_columns = self.dados_brutos.columns[1:].tolist()
+                asset_columns = colunas[1:]
         else:
-            asset_columns = self.dados_brutos.columns[1:].tolist()
+            asset_columns = colunas[1:]
 
         if self.periodo_disponivel:
             status_text = (
@@ -2750,9 +2798,11 @@ class PortfolioOptimizerGUI(QMainWindow):
         for asset in asset_columns:
             self.assets_listbox.insert(END, asset)
 
-        # Há base carregada: libera o download dela
+        # Há base carregada: libera o download dela e a troca de referência
         if hasattr(self, 'btn_download_base'):
             self.btn_download_base.setEnabled(True)
+        if hasattr(self, 'btn_trocar_ref'):
+            self.btn_trocar_ref.setEnabled(True)
 
         self.update_advanced_widgets()
         self.atualizar_datas_automaticas()
@@ -2821,6 +2871,90 @@ class PortfolioOptimizerGUI(QMainWindow):
                 f"📊 {df.shape[0]} linhas × {n_ativos} colunas de preços.")
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao salvar a base:\n{str(e)}")
+
+    def closeEvent(self, event):
+        """
+        Ao fechar o programa, apaga os arquivos que a importação da CVM baixou.
+
+        Eles somam dezenas de MB e não precisam ficar na máquina do usuário:
+        a base já importada pode ser guardada pelo botão "Baixar Base de Dados
+        Carregada" e recarregada depois como planilha.
+
+        A remoção é SELETIVA — só os arquivos que o próprio programa baixou
+        (inf_diario_fi_*.csv e cad_fi_hist*.csv). A pasta é escolhida pelo
+        usuário e pode conter arquivos dele (o CNPJ.csv, por exemplo), que não
+        são tocados; a pasta só é removida se ficar vazia.
+        """
+        try:
+            if CVM_OK:
+                total = 0
+                for pasta in getattr(self, 'cvm_caches_usados', set()):
+                    total += cvmsrc.limpar_cache(pasta)
+                if total:
+                    print(f"🧹 Cache da CVM limpo: {total} arquivo(s) removido(s).")
+        except Exception as e:
+            print(f"⚠️ Não foi possível limpar o cache da CVM: {e}")
+        super().closeEvent(event)
+
+    def trocar_referencia(self):
+        """
+        Troca a taxa de referência sobre a base JÁ carregada, sem reimportar.
+
+        Qualquer coluna pode virar referência (ou nenhuma). A escolhida sai da
+        lista de ativos e passa a ser o benchmark; a anterior volta a ser um
+        ativo comum.
+
+        Como a referência entra no cálculo de Sharpe, excesso e dos objetivos
+        de excesso, o período processado é invalidado — é preciso processar de
+        novo na própria aba.
+        """
+        df = getattr(self, 'dados_brutos', None)
+        if df is None or df.empty or len(df.columns) < 2:
+            messagebox.showerror("Erro", "Não há base carregada.")
+            return
+
+        atual = getattr(self, 'risk_free_column_name', None)
+        candidatos = [c for c in df.columns if c != 'Data']
+        escolhido = _escolher_referencia(self, candidatos, atual=atual)
+
+        if escolhido == atual:
+            return  # nada mudou
+
+        novo = df.copy()
+
+        # A referência anterior volta a ser ativo comum. Se o nome foi criado
+        # por nós (prefixo Taxa_Ref_), devolve o nome original do ativo; se era
+        # um nome próprio da planilha do usuário, preserva como está.
+        if atual and atual in novo.columns and atual.startswith('Taxa_Ref_'):
+            original = atual[len('Taxa_Ref_'):]
+            if original and original not in novo.columns:
+                novo = novo.rename(columns={atual: original})
+
+        nome_ref = None
+        if escolhido:
+            novo, nome_ref = promote_reference_column(novo, escolhido)
+            if nome_ref is None:      # o nome já vinha prefixado: só reposiciona
+                outras = [c for c in novo.columns if c not in ('Data', escolhido)]
+                novo = novo[['Data', escolhido] + outras]
+                nome_ref = escolhido
+
+        origem = getattr(self, 'status_label', None)
+        texto_origem = "Base carregada"
+        if origem is not None:
+            primeira = origem.text().split('\n')[0]
+            texto_origem = primeira.lstrip('✅ ').strip() or texto_origem
+
+        self._apply_raw_data(novo, texto_origem, referencia=nome_ref)
+
+        if nome_ref:
+            msg = f"🏛️ Referência agora é:\n{nome_ref}"
+        else:
+            msg = ("Base agora está SEM taxa de referência.\n\n"
+                   "Os objetivos que dependem dela ficam indisponíveis.")
+        messagebox.showinfo(
+            "Referência alterada",
+            msg + "\n\n⚠️ Processe o período novamente para os cálculos "
+                  "refletirem a nova referência.")
 
     def open_yahoo_import(self):
         """Abre o diálogo de importação de cotações do Yahoo Finance."""
@@ -2906,9 +3040,34 @@ class PortfolioOptimizerGUI(QMainWindow):
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao aplicar os dados importados:\n{str(e)}")
 
+    def _coluna_referencia(self):
+        """Informa ao otimizador qual coluna é a referência.
+
+        Quem decide isso é a interface — pela detecção automática na importação
+        ou pela escolha manual do usuário. Sem essa informação o otimizador
+        precisa adivinhar pelo nome da segunda coluna, e a adivinhação erra
+        feio com fundos: qualquer *REFERENCIADO DI* contém 'ref' e seria
+        tratado como taxa de referência, sumindo da carteira.
+
+        Retorna None quando não há referência — o que é diferente de "não sei".
+        """
+        return self.risk_free_column_name if self.has_risk_free else None
+
     def update_objective_options(self):
         """Atualizar opções de objetivo baseado na taxa livre"""
         _clear_layout(self.risk_free_obj_layout)
+
+        # Os botões acabaram de ser destruídos, mas as referências a eles
+        # continuam nos dicionários. Se um objetivo de excesso estava escolhido
+        # e a referência foi retirada, a escolha ficaria valendo sem aparecer na
+        # tela — a otimização rodaria um objetivo impossível. Por isso a faxina
+        # abaixo, que volta ao objetivo padrão quando isso acontece.
+        escolhido = self.objective_var.get()
+        for obj in self.risk_free_objectives:
+            self.objective_buttons.pop(obj, None)
+            self.objective_var.buttons.pop(obj, None)
+        if escolhido in self.risk_free_objectives and not self.has_risk_free:
+            self.objective_buttons["Maximizar Sharpe Ratio"].setChecked(True)
 
         if self.has_risk_free:
             sep = QFrame()
@@ -2925,6 +3084,11 @@ class PortfolioOptimizerGUI(QMainWindow):
                 self.risk_free_obj_layout.addWidget(rb)
                 self.objective_buttons[obj] = rb
                 self.objective_var.add(obj, rb)
+
+            # A referência mudou, mas continua existindo: devolve ao usuário o
+            # objetivo de excesso que ele já havia escolhido.
+            if escolhido in self.risk_free_objectives:
+                self.objective_buttons[escolhido].setChecked(True)
 
     def update_advanced_widgets(self):
         self.update_constraints_widgets()
@@ -3457,7 +3621,8 @@ class PortfolioOptimizerGUI(QMainWindow):
             status_label.setText("Inicializando otimizador...")
             QApplication.processEvents()
 
-            self.optimizer = PortfolioOptimizer(self.df, all_assets)
+            self.optimizer = PortfolioOptimizer(self.df, all_assets,
+                                                risk_free_column=self._coluna_referencia())
 
             status_label.setText("Configurando parâmetros...")
             QApplication.processEvents()
@@ -3647,7 +3812,8 @@ class PortfolioOptimizerGUI(QMainWindow):
                 else:
                     assets_used_in_optimization = selected_assets
 
-                optimizer_valid = PortfolioOptimizer(self.df_analise, assets_used_in_optimization)
+                optimizer_valid = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
+                                                     risk_free_column=self._coluna_referencia())
 
                 n_assets_optimization = len(self.result['weights'])
                 n_assets_validation = optimizer_valid.returns_data.shape[1] if len(optimizer_valid.returns_data.shape) > 1 else 1
@@ -3947,7 +4113,8 @@ Isso ajuda a detectar:
                 else:
                     assets_used_in_optimization = selected_assets
 
-                optimizer_extended = PortfolioOptimizer(self.df_analise, assets_used_in_optimization)
+                optimizer_extended = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
+                                                        risk_free_column=self._coluna_referencia())
 
                 if self.has_risk_free and hasattr(self.optimizer, 'risk_free_rate_total'):
                     final_risk_free_rate = self.optimizer.risk_free_rate_total
@@ -4911,7 +5078,8 @@ Isso ajuda a detectar:
                 else:
                     all_assets = selected_assets
 
-                self.optimizer = PortfolioOptimizer(self.df, all_assets)
+                self.optimizer = PortfolioOptimizer(self.df, all_assets,
+                                                    risk_free_column=self._coluna_referencia())
 
                 if hasattr(self.optimizer, 'risk_free_rate_total'):
                     risk_free_rate = self.optimizer.risk_free_rate_total
@@ -4990,7 +5158,8 @@ Isso ajuda a detectar:
                     print("⚠️ Nem todos os ativos disponíveis no período completo")
                     return None
 
-                optimizer_completo = PortfolioOptimizer(df_completo, available_assets)
+                optimizer_completo = PortfolioOptimizer(df_completo, available_assets,
+                                                        risk_free_column=self._coluna_referencia())
 
                 portfolio_returns_completo = np.dot(optimizer_completo.returns_data.values, optimized_weights)
                 cumulative_completo = np.cumsum(portfolio_returns_completo)

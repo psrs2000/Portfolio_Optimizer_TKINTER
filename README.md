@@ -105,6 +105,7 @@ A planilha deve seguir o seguinte padrão:
 - Selecione o arquivo .xlsx ou .xls no diálogo que aparecer.
 - O painel 'Informações do Arquivo' exibirá: nome do arquivo, número de linhas e colunas, período disponível (data início e data fim) e total de dias.
 - Se uma taxa de referência for detectada automaticamente, ela aparecerá em verde no painel 'Taxa de Referência Detectada'. Caso contrário, um aviso em vermelho indicará que nenhuma taxa foi encontrada.
+- Acertou ou errou, a escolha não é definitiva: o botão **🏛️ Alterar Ativo de Referência** troca a referência a qualquer momento (seção 3.2.3).
 
 ⚠️ Se a taxa de referência for detectada automaticamente, o campo de taxa manual na aba Configuração é desabilitado. Se não for detectada, o campo manual permanece disponível para entrada manual do valor acumulado no período.
 
@@ -207,11 +208,13 @@ O que é baixado automaticamente:
 | Informe diário, 2021 em diante | `.../FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_AAAAMM.zip` (mensal)   |
 | Informe diário, antes de 2021  | `.../FI/DOC/INF_DIARIO/DADOS/HIST/inf_diario_fi_AAAA.zip` (anual) |
 
-⚠️ **Os arquivos são grandes** — cada informe diário traz todos os fundos do país. A primeira busca de um período baixa e **guarda em cache**; as buscas seguintes reaproveitam o que já está lá. Um zip anual do histórico traz os 12 meses de uma vez, então basta um download por ano antigo.
+⚠️ **Os arquivos são grandes** — cada informe diário traz todos os fundos do país. Dentro da **mesma sessão**, a primeira busca de um período baixa e guarda em cache; as buscas seguintes reaproveitam o que já está lá. Um zip anual do histórico traz os 12 meses de uma vez, então basta um download por ano antigo.
 
-### Onde fica o cache
+### O cache é apagado ao fechar o programa
 
-O cache **não é apagado ao fechar o programa** — é essa a razão de ele existir. Nada é removido automaticamente; para liberar espaço, apague a pasta à mão.
+Ao fechar a janela, o programa **apaga os arquivos que ele mesmo baixou** da CVM. A ideia é não deixar centenas de megabytes largados na máquina de quem usa o sistema: se você quer guardar os dados, o caminho é **💾 Baixar Base de Dados Carregada** (seção 3.2.2), que salva a série já pronta num arquivo pequeno.
+
+A limpeza é **seletiva**: só saem os arquivos com cara de download da CVM (`inf_diario_fi_*.csv` e `cad_fi_hist*.csv`). Qualquer outro arquivo seu que esteja na pasta — o **`CNPJ.csv`**, por exemplo — **não é tocado**. A pasta em si só é removida se ficar vazia.
 
 | **Como você executa** | **Pasta padrão do cache** |
 | --------------------- | ------------------------- |
@@ -220,7 +223,7 @@ O cache **não é apagado ao fechar o programa** — é essa a razão de ele exi
 
 A pasta é exibida (e pode ser trocada) na própria janela de importação.
 
-⚠️ **Por que o executável usa `%APPDATA%` e não a própria pasta:** um executável único extrai seu conteúdo para uma pasta temporária e a **apaga ao fechar**. Se o cache ficasse ali, tudo seria baixado de novo a cada abertura. Em `%APPDATA%` ele persiste — e sobrevive inclusive quando você substitui o `.exe` por uma versão nova.
+💡 **Consequência prática:** reabrir o programa e repetir a mesma busca baixa os arquivos de novo. É o preço de não deixar rastro — e vale mais a pena do que manter o disco ocupado, já que a base importada pode ser salva em Excel a qualquer momento.
 
 💡 **As colunas recebem o nome do fundo** (denominação social vigente no cadastro), que costuma ser longo. É esse nome que aparece na lista de ativos, na composição da carteira e nos gráficos.
 
@@ -228,7 +231,7 @@ A pasta é exibida (e pode ser trocada) na própria janela de importação.
 
 ## 3.2.2 Baixar a Base Carregada
 
-O botão **💾 Baixar Base de Dados Carregada** salva em disco a base **bruta** atualmente em memória — não importa a origem (planilha, Yahoo, B3 ou Excel). Útil para conferir os dados, ajustá-los à mão ou guardar uma cópia da série que você montou online.
+O botão **💾 Baixar Base de Dados Carregada** salva em disco a base **bruta** atualmente em memória — não importa a origem (planilha, Yahoo, B3, Excel ou CVM). Útil para conferir os dados, ajustá-los à mão ou guardar uma cópia da série que você montou online.
 
 - Fica **desabilitado** enquanto nenhuma base estiver carregada; habilita automaticamente após carregar/importar.
 - Escolha **.xlsx** (Excel, com datas em DD/MM/AAAA, preços numéricos, cabeçalho em negrito e primeira linha congelada) ou **.csv** (separador `;` e decimal `,`, padrão que o Excel pt-BR abre direto).
@@ -237,6 +240,28 @@ O botão **💾 Baixar Base de Dados Carregada** salva em disco a base **bruta**
 💡 Os preços são gravados com **precisão total** (sem arredondamento), para que o arquivo seja fiel ao dado usado nos cálculos. No Excel, a exibição fica limpa (2 casas) mas o valor exato é preservado na célula.
 
 💡 Um bom uso: importe online (Yahoo/B3/Excel), baixe a base, ajuste o que precisar numa planilha e recarregue pelo botão **📂 Carregar Planilha Excel**.
+
+## 3.2.3 Alterar o Ativo de Referência
+
+O botão **🏛️ Alterar Ativo de Referência** troca a referência **sem reimportar nada**. Serve para duas situações comuns:
+
+- A detecção automática escolheu a coluna errada — ou não escolheu nenhuma.
+- Você quer comparar a mesma carteira contra **benchmarks diferentes** (CDI, Ibovespa, um fundo específico) sem baixar tudo de novo.
+
+Como funciona:
+
+1. Abre a lista de **todas as colunas da base**, com a referência atual já marcada.
+2. A referência antiga **volta a ser um ativo comum**, recuperando o nome original (o prefixo `Taxa_Ref_` só é retirado quando foi o programa que o colocou; nomes que vieram da sua planilha são preservados como estão).
+3. A nova referência é renomeada para `Taxa_Ref_<NOME>` e movida para a segunda coluna.
+4. A lista de ativos, o painel **Taxa de Referência Detectada** e os **objetivos de excesso** são atualizados na hora.
+
+Também existe a opção **Seguir sem referência**: a base fica só com ativos e os objetivos que dependem da referência somem da aba Configuração. Se algum deles estava selecionado, o programa volta sozinho para **Maximizar Sharpe Ratio** — assim não há como rodar uma otimização de excesso sem ter contra o que comparar.
+
+⚠️ **Processe o período novamente** depois de trocar. A troca mexe na base bruta; os cálculos já feitos continuam valendo para a referência antiga até você clicar em **⚡ Processar Período Selecionado**. O programa avisa isso na própria mensagem de confirmação.
+
+💡 **Por que isso é necessário e não basta a detecção automática:** ela procura palavras como `taxa`, `livre`, `risco`, `ibov`, `ref`, `cdi` e `selic` no nome da segunda coluna. Entre fundos, "ref" aparece em qualquer *REFERENCIADO DI* — e um palpite errado é pior do que nenhum. Com a troca manual, o palpite deixa de ser definitivo.
+
+⚠️ **A decisão agora é da interface, não do otimizador.** Antes, o otimizador refazia o mesmo palpite por conta própria a cada cálculo. Se a segunda coluna fosse um fundo *REFERENCIADO DI* que você quisesse como **ativo**, ele era engolido como taxa de referência e sumia da carteira — ou a otimização parava com um erro de coluna ausente. Hoje a interface informa explicitamente qual é a referência (ou que não há nenhuma), e o palpite só é usado por quem chama o otimizador direto, fora do programa.
 
 ## 3.3 Configurar Janelas Temporais
 
@@ -686,8 +711,8 @@ Para obter os melhores resultados, siga esta sequência:
 
 | **Etapa** | **Ação**                                                                         | **Aba**                |
 | --------- | -------------------------------------------------------------------------------- | ---------------------- |
-| 1         | Prepare a planilha Excel com datas, benchmark e ativos.                          | -                      |
-| 2         | Carregue o arquivo e verifique se o benchmark foi detectado corretamente.        | 📁 Dados               |
+| 1         | Prepare a planilha Excel com datas, benchmark e ativos — ou importe de uma das fontes online. | -         |
+| 2         | Verifique se o benchmark foi detectado corretamente; se não, use 🏛️ Alterar Ativo de Referência. | 📁 Dados |
 | 3         | Configure as janelas temporais (sugestão: 70% treino, 30% validação) e processe. | 📁 Dados               |
 | 4         | Selecione os ativos de interesse ou use o ranking para seleção automática.       | 📁 Dados / 🏆 Ranking  |
 | 5         | Defina o objetivo de otimização e os limites globais de peso.                    | ⚙️ Configuração        |

@@ -126,6 +126,48 @@ def baixar_cadastro(cache_dir, forcar=False):
     return criados[0]
 
 
+def arquivos_baixados(cache_dir):
+    """
+    Lista os arquivos que ESTE modulo baixou para o cache.
+
+    Serve para limpar o cache sem risco: a pasta e escolhida pelo usuario e
+    pode conter arquivos dele (o CNPJ.csv, por exemplo), entao nunca apagamos
+    a pasta inteira — apenas o que sabemos ter baixado.
+    """
+    if not cache_dir or not os.path.isdir(cache_dir):
+        return []
+    alvos = []
+    for nome in os.listdir(cache_dir):
+        baixo = nome.lower()
+        if not baixo.endswith('.csv'):
+            continue
+        # Exatamente os dois padroes que baixamos/extraimos
+        if baixo.startswith('inf_diario_fi_') or baixo.startswith('cad_fi_hist'):
+            alvos.append(os.path.join(cache_dir, nome))
+    return alvos
+
+
+def limpar_cache(cache_dir):
+    """
+    Apaga do cache os arquivos baixados por este modulo e devolve quantos foram
+    removidos. Arquivos do usuario (CNPJ.csv, planilhas etc.) NAO sao tocados,
+    e a pasta so e removida se ficar vazia.
+    """
+    removidos = 0
+    for caminho in arquivos_baixados(cache_dir):
+        try:
+            os.remove(caminho)
+            removidos += 1
+        except OSError:
+            pass
+    try:
+        if os.path.isdir(cache_dir) and not os.listdir(cache_dir):
+            os.rmdir(cache_dir)
+    except OSError:
+        pass
+    return removidos
+
+
 def _csv_do_mes(cache_dir, ano, mes):
     """Caminho do CSV mensal no cache, se já estiver lá."""
     caminho = os.path.join(cache_dir, f"inf_diario_fi_{ano}{mes:02d}.csv")
