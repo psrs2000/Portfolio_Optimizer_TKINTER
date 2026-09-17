@@ -51,6 +51,27 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 
 💡 O arquivo `optimizer.py` precisa estar na mesma pasta que `desktop_app_qt.py` para o programa funcionar corretamente.
 
+⚠️ Os módulos das fontes de dados (`cvm_fundos.py`, `b3_series_wide_com_limpeza.py`, `b3_excel_rendafixa.py`) também precisam estar **na mesma pasta**. Sem eles o aplicativo abre normalmente, mas o botão da fonte correspondente avisa o que está faltando.
+
+## 1.4 Gerar o Executável (Windows)
+
+Para distribuir o programa a quem não tem Python instalado, dê **duplo clique em `Construir executavel.bat`**. Ele cuida de tudo: localiza o Python, cria um ambiente isolado (`.venv`), instala as dependências e chama o PyInstaller.
+
+O resultado sai em **`dist\Otimizador de Portfolio\`**.
+
+⚠️ **O programa é a PASTA inteira, não apenas o `.exe`.** Para levar a outro computador, copie ou compacte a pasta completa. Dentro dela, o arquivo que abre o programa é `Otimizador de Portfolio.exe`.
+
+Duas escolhas feitas na receita de construção (`desktop_app_qt.spec`), e o porquê:
+
+| **Escolha** | **Motivo** |
+| ----------- | ---------- |
+| **Pasta** (e não arquivo único) | O executável único descompacta ~200 MB numa pasta temporária a **cada** execução, deixando toda abertura lenta. Em pasta esse custo não existe. |
+| **Console ligado** | O programa imprime o andamento da auto-otimização (steps, composição da carteira, avisos do solver). Escondendo o console esses logs se perdem. Para preferir a janela limpa, troque `console=True` por `False` no `.spec`. |
+
+💡 **A primeira abertura demora mais** — o Windows está lendo e verificando os arquivos pela primeira vez (o antivírus escaneia cada DLL nova). As aberturas seguintes são rápidas. Se incomodar, ajuda: manter a pasta fora do OneDrive e adicioná-la às exclusões do Windows Defender.
+
+💡 As fontes opcionais (`yfinance` e `xlwings`) são instaladas **em separado** pelo `.bat`, sem interromper a construção se alguma falhar — o aplicativo funciona sem elas.
+
 # 2\. Estrutura da Interface
 
 A interface é organizada em 8 abas (tabs) na parte superior da janela. O fluxo de trabalho recomendado segue a ordem das abas da esquerda para a direita.

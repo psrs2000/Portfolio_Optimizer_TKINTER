@@ -7,3 +7,11 @@ venv/
 
 # OS / editor
 .DS_Store
+
+# Build (PyInstaller)
+build/
+dist/
+*.manifest
+
+# Cache das fontes de dados
+cvm_cache/

@@ -1,0 +1,26 @@
+# Dependencias OBRIGATORIAS do Otimizador de Portfolio (versao PyQt5).
+# Sem qualquer uma delas o aplicativo nao abre.
+PyQt5
+pandas
+numpy
+scipy
+matplotlib
+openpyxl
+requests
+
+# ---------------------------------------------------------------------------
+# Fontes de dados OPCIONAIS (nao estao nesta lista de proposito).
+#
+# O aplicativo abre e funciona sem elas; apenas o botao correspondente avisa
+# o que falta. Por isso o "Construir executavel.bat" as instala em separado,
+# sem interromper a construcao se alguma falhar.
+#
+#   yfinance   -> importacao pelo Yahoo Finance
+#   xlwings    -> importacao via Excel/STOCKHISTORY (renda fixa).
+#                 So funciona no Windows com Excel 365 instalado e logado.
+#
+# Para instalar manualmente:  pip install yfinance xlwings
+#
+# A importacao da B3 (COTAHIST) e a da CVM (fundos) usam o 'requests', que ja
+# esta na lista obrigatoria.
+# ---------------------------------------------------------------------------
