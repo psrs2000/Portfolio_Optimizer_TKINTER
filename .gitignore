@@ -15,3 +15,6 @@ dist/
 
 # Cache das fontes de dados
 cvm_cache/
+
+# Preferencias do usuario (geradas em tempo de execucao)
+preferencias.json

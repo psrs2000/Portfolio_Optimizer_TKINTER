@@ -208,13 +208,20 @@ O que é baixado automaticamente:
 | Informe diário, 2021 em diante | `.../FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_AAAAMM.zip` (mensal)   |
 | Informe diário, antes de 2021  | `.../FI/DOC/INF_DIARIO/DADOS/HIST/inf_diario_fi_AAAA.zip` (anual) |
 
-⚠️ **Os arquivos são grandes** — cada informe diário traz todos os fundos do país. Dentro da **mesma sessão**, a primeira busca de um período baixa e guarda em cache; as buscas seguintes reaproveitam o que já está lá. Um zip anual do histórico traz os 12 meses de uma vez, então basta um download por ano antigo.
+⚠️ **Os arquivos são grandes** — cada informe diário traz todos os fundos do país. A primeira busca de um período baixa e guarda em cache; as buscas seguintes reaproveitam o que já está lá. Um zip anual do histórico traz os 12 meses de uma vez, então basta um download por ano antigo.
 
-### O cache é apagado ao fechar o programa
+### O cache: apagar ao sair, ou guardar?
 
-Ao fechar a janela, o programa **apaga os arquivos que ele mesmo baixou** da CVM. A ideia é não deixar centenas de megabytes largados na máquina de quem usa o sistema: se você quer guardar os dados, o caminho é **💾 Baixar Base de Dados Carregada** (seção 3.2.2), que salva a série já pronta num arquivo pequeno.
+Os dois lados têm razão, e por isso **quem decide é você**. Na janela de importação, logo abaixo da pasta, existe a caixa **☑️ Apagar os arquivos baixados ao fechar o programa**:
 
-A limpeza é **seletiva**: só saem os arquivos com cara de download da CVM (`inf_diario_fi_*.csv` e `cad_fi_hist*.csv`). Qualquer outro arquivo seu que esteja na pasta — o **`CNPJ.csv`**, por exemplo — **não é tocado**. A pasta em si só é removida se ficar vazia.
+| **Caixa** | **O que acontece** | **Para quem** |
+| --------- | ------------------ | ------------- |
+| **Marcada** (padrão) | Ao fechar, os arquivos baixados são apagados. Repetir a busca depois baixa tudo de novo. | Quem usa de vez em quando e não quer centenas de megabytes parados no disco. |
+| **Desmarcada** | Os arquivos ficam guardados e são reaproveitados nas próximas aberturas. A pasta cresce com o tempo. | Quem acompanha sempre os mesmos fundos e repete as buscas — economiza um download grande a cada vez. |
+
+A escolha **fica gravada** e vale para as próximas aberturas; você só precisa decidir uma vez. Ela é guardada num `preferencias.json` ao lado do cache (um arquivo minúsculo, de texto).
+
+A limpeza, quando acontece, é **seletiva**: só saem os arquivos com cara de download da CVM (`inf_diario_fi_*.csv` e `cad_fi_hist*.csv`). Qualquer outro arquivo seu que esteja na pasta — o **`CNPJ.csv`**, por exemplo — **não é tocado**. A pasta em si só é removida se ficar vazia.
 
 | **Como você executa** | **Pasta padrão do cache** |
 | --------------------- | ------------------------- |
@@ -223,7 +230,9 @@ A limpeza é **seletiva**: só saem os arquivos com cara de download da CVM (`in
 
 A pasta é exibida (e pode ser trocada) na própria janela de importação.
 
-💡 **Consequência prática:** reabrir o programa e repetir a mesma busca baixa os arquivos de novo. É o preço de não deixar rastro — e vale mais a pena do que manter o disco ocupado, já que a base importada pode ser salva em Excel a qualquer momento.
+💡 Seja qual for a escolha, a base já importada pode ser salva a qualquer momento com **💾 Baixar Base de Dados Carregada** (seção 3.2.2) — um arquivo pequeno, que recarrega pelo botão de planilha e dispensa voltar à CVM.
+
+⚠️ **Por que o executável usa `%APPDATA%` e não a própria pasta:** um executável único extrai seu conteúdo para uma pasta temporária e a apaga ao fechar. Se o cache ficasse ali, guardá-lo não adiantaria nada — seria apagado de todo jeito. Em `%APPDATA%` ele persiste, e sobrevive inclusive à troca do `.exe` por uma versão nova.
 
 💡 **As colunas recebem o nome do fundo** (denominação social vigente no cadastro), que costuma ser longo. É esse nome que aparece na lista de ativos, na composição da carteira e nos gráficos.
 

@@ -15,6 +15,7 @@ o mesmo usado pela versão Tkinter.
 
 import os
 import sys
+import json
 
 # Garantir que o backend Qt do matplotlib use PyQt5
 os.environ.setdefault("QT_API", "pyqt5")
@@ -781,6 +782,46 @@ def pasta_dados_usuario(nome_app="OtimizadorPortfolio"):
     return os.path.dirname(os.path.abspath(__file__))
 
 
+# Preferências do usuário que sobrevivem ao fechamento do programa.
+# Hoje só existe uma, mas o arquivo já nasce como dicionário para caber outras.
+ARQUIVO_PREFERENCIAS = "preferencias.json"
+PREF_LIMPAR_CACHE = "limpar_cache_cvm_ao_sair"
+
+
+def _caminho_preferencias():
+    return os.path.join(pasta_dados_usuario(), ARQUIVO_PREFERENCIAS)
+
+
+def ler_preferencia(chave, padrao=None):
+    """Lê uma preferência. Qualquer problema (arquivo ausente, ilegível,
+    corrompido) devolve o padrão — preferência nenhuma justifica travar o
+    programa."""
+    try:
+        with open(_caminho_preferencias(), encoding='utf-8') as f:
+            return json.load(f).get(chave, padrao)
+    except Exception:
+        return padrao
+
+
+def gravar_preferencia(chave, valor):
+    """Grava uma preferência preservando as demais. Falha em silêncio: se a
+    pasta não for gravável, o programa segue com o valor padrão."""
+    caminho = _caminho_preferencias()
+    dados = {}
+    try:
+        with open(caminho, encoding='utf-8') as f:
+            dados = json.load(f)
+    except Exception:
+        pass
+    dados[chave] = valor
+    try:
+        os.makedirs(os.path.dirname(caminho), exist_ok=True)
+        with open(caminho, 'w', encoding='utf-8') as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def promote_reference_column(df, ativo_referencia):
     """
     Renomeia a coluna do ativo de referência para 'Taxa_Ref_<CÓDIGO>' e a move
@@ -1259,7 +1300,9 @@ class CVMImportDialog(_PriceImportDialog):
             mostrar_preco=False,     # informe diário só tem VL_QUOTA
             ref_por_lista=True)      # nomes dos fundos só se sabem após baixar
         self.progress_label = "CVM"
-        self.setMinimumSize(660, 800)   # tem uma caixa a mais que as outras fontes
+        # Mais alta que as outras fontes: tem a caixa da pasta de cache, a opção
+        # de apagar ao sair e a explicação que acompanha as duas.
+        self.setMinimumSize(660, 880)
 
     def default_symbols(self):
         return ""
@@ -1282,17 +1325,46 @@ class CVMImportDialog(_PriceImportDialog):
         b.clicked.connect(self._escolher_pasta)
         linha.addWidget(b)
         bl.addLayout(linha)
-        hint = QLabel(
-            "Os arquivos baixados ficam aqui durante o uso e são reaproveitados "
-            "entre buscas da mesma sessão. Ao FECHAR o programa eles são apagados "
-            "(apenas os baixados — seus próprios arquivos não são tocados).\n"
-            "Para guardar os dados, use o botão \"Baixar Base de Dados Carregada\".\n"
-            "Se existir um CNPJ.csv nesta pasta, os CNPJs são carregados dele.")
-        hint.setStyleSheet("color: gray;")
-        hint.setWordWrap(True)
-        bl.addWidget(hint)
+
+        # Apagar ou guardar o cache é gosto de cada um: quem repete sempre os
+        # mesmos fundos economiza um download enorme guardando; quem usa uma vez
+        # só não quer deixar centenas de MB na máquina. A escolha fica gravada e
+        # vale para as próximas vezes.
+        self.chk_limpar_cache = QCheckBox(
+            "Apagar os arquivos baixados ao fechar o programa")
+        self.chk_limpar_cache.setChecked(bool(ler_preferencia(PREF_LIMPAR_CACHE, True)))
+        self.chk_limpar_cache.toggled.connect(self._mudou_limpeza_cache)
+        bl.addWidget(self.chk_limpar_cache)
+
+        self.hint_cache = QLabel()
+        self.hint_cache.setStyleSheet("color: gray;")
+        self.hint_cache.setWordWrap(True)
+        bl.addWidget(self.hint_cache)
+        self._atualizar_dica_cache()
+
         layout.addWidget(box)
         self._carregar_cnpjs_da_pasta(padrao)
+
+    def _mudou_limpeza_cache(self, marcado):
+        """Guarda a escolha na hora, para valer nas próximas aberturas."""
+        gravar_preferencia(PREF_LIMPAR_CACHE, bool(marcado))
+        self._atualizar_dica_cache()
+
+    def _atualizar_dica_cache(self):
+        comum = ("\nPara guardar os dados já importados, use o botão "
+                 "\"Baixar Base de Dados Carregada\".\n"
+                 "Se existir um CNPJ.csv nesta pasta, os CNPJs são carregados dele.")
+        if self.chk_limpar_cache.isChecked():
+            texto = ("Os arquivos baixados ficam aqui durante o uso e são "
+                     "reaproveitados entre buscas da mesma sessão. Ao FECHAR o "
+                     "programa eles são apagados (apenas os baixados — seus "
+                     "próprios arquivos não são tocados).")
+        else:
+            texto = ("Os arquivos ficam guardados aqui, inclusive depois de "
+                     "fechar o programa: repetir uma busca fica bem mais "
+                     "rápido, mas a pasta cresce. Para liberar espaço, marque "
+                     "a caixa acima ou apague a pasta à mão.")
+        self.hint_cache.setText(texto + comum)
 
     def _escolher_pasta(self):
         pasta = QFileDialog.getExistingDirectory(
@@ -2874,11 +2946,15 @@ class PortfolioOptimizerGUI(QMainWindow):
 
     def closeEvent(self, event):
         """
-        Ao fechar o programa, apaga os arquivos que a importação da CVM baixou.
+        Ao fechar o programa, apaga os arquivos que a importação da CVM baixou —
+        se o usuário assim quiser.
 
-        Eles somam dezenas de MB e não precisam ficar na máquina do usuário:
-        a base já importada pode ser guardada pelo botão "Baixar Base de Dados
-        Carregada" e recarregada depois como planilha.
+        Os dois lados têm razão, e por isso a decisão é dele (caixa de escolha
+        na janela de importação, preferência gravada em disco):
+        - APAGANDO, não ficam centenas de MB na máquina; a base já importada
+          pode ser guardada pelo botão "Baixar Base de Dados Carregada".
+        - GUARDANDO, quem repete sempre os mesmos fundos evita rebaixar tudo a
+          cada abertura.
 
         A remoção é SELETIVA — só os arquivos que o próprio programa baixou
         (inf_diario_fi_*.csv e cad_fi_hist*.csv). A pasta é escolhida pelo
@@ -2886,12 +2962,16 @@ class PortfolioOptimizerGUI(QMainWindow):
         são tocados; a pasta só é removida se ficar vazia.
         """
         try:
-            if CVM_OK:
-                total = 0
-                for pasta in getattr(self, 'cvm_caches_usados', set()):
-                    total += cvmsrc.limpar_cache(pasta)
-                if total:
-                    print(f"🧹 Cache da CVM limpo: {total} arquivo(s) removido(s).")
+            pastas = getattr(self, 'cvm_caches_usados', set())
+            if CVM_OK and pastas:
+                if ler_preferencia(PREF_LIMPAR_CACHE, True):
+                    total = 0
+                    for pasta in pastas:
+                        total += cvmsrc.limpar_cache(pasta)
+                    if total:
+                        print(f"🧹 Cache da CVM limpo: {total} arquivo(s) removido(s).")
+                else:
+                    print("📦 Cache da CVM mantido (escolha do usuário).")
         except Exception as e:
             print(f"⚠️ Não foi possível limpar o cache da CVM: {e}")
         super().closeEvent(event)
