@@ -760,6 +760,27 @@ def limpar_series_precos(wide, k=10):
     return limpo, {"regra1": rem1, "regra2": rem2, "mantidos": manter, "k": k}
 
 
+def pasta_dados_usuario(nome_app="OtimizadorPortfolio"):
+    """
+    Pasta para dados que precisam PERSISTIR entre execuções — hoje, o cache
+    dos arquivos da CVM.
+
+    Não dá para usar a pasta do próprio programa: quando ele é empacotado como
+    executável ÚNICO, o PyInstaller extrai tudo para uma pasta temporária e a
+    APAGA ao fechar. Guardar o cache lá faria todos os arquivos da CVM (que são
+    grandes) serem baixados de novo a cada abertura.
+
+    Por isso, quando empacotado, usamos a pasta de dados do usuário (%APPDATA%
+    no Windows), que além de sempre existir sobrevive à troca do executável por
+    uma versão nova. Rodando como script, fica ao lado do .py, que é prático no
+    desenvolvimento.
+    """
+    if getattr(sys, 'frozen', False):          # rodando como executável
+        base = os.environ.get('APPDATA') or os.path.expanduser('~')
+        return os.path.join(base, nome_app)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def promote_reference_column(df, ativo_referencia):
     """
     Renomeia a coluna do ativo de referência para 'Taxa_Ref_<CÓDIGO>' e a move
@@ -1240,7 +1261,7 @@ class CVMImportDialog(_PriceImportDialog):
         box = QGroupBox("📁 Pasta de cache dos arquivos da CVM")
         bl = QVBoxLayout(box)
         linha = QHBoxLayout()
-        padrao = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cvm_cache")
+        padrao = os.path.join(pasta_dados_usuario(), "cvm_cache")
         self.cache_entry = QLineEdit(padrao)
         linha.addWidget(self.cache_entry, 1)
         b = QPushButton("Procurar...")
@@ -1248,7 +1269,9 @@ class CVMImportDialog(_PriceImportDialog):
         linha.addWidget(b)
         bl.addLayout(linha)
         hint = QLabel(
-            "Os arquivos baixados ficam aqui e são reaproveitados nas próximas buscas. "
+            "Os arquivos baixados ficam aqui e são reaproveitados nas próximas buscas — "
+            "inclusive depois de fechar o programa. Nada é apagado automaticamente; "
+            "para liberar espaço, apague a pasta à mão.\n"
             "Se existir um CNPJ.csv nesta pasta, os CNPJs são carregados dele.")
         hint.setStyleSheet("color: gray;")
         hint.setWordWrap(True)

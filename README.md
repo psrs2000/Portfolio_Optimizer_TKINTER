@@ -209,6 +209,19 @@ O que é baixado automaticamente:
 
 ⚠️ **Os arquivos são grandes** — cada informe diário traz todos os fundos do país. A primeira busca de um período baixa e **guarda em cache**; as buscas seguintes reaproveitam o que já está lá. Um zip anual do histórico traz os 12 meses de uma vez, então basta um download por ano antigo.
 
+### Onde fica o cache
+
+O cache **não é apagado ao fechar o programa** — é essa a razão de ele existir. Nada é removido automaticamente; para liberar espaço, apague a pasta à mão.
+
+| **Como você executa** | **Pasta padrão do cache** |
+| --------------------- | ------------------------- |
+| Script (`python desktop_app_qt.py`) | `<pasta do projeto>\cvm_cache` |
+| Executável (`.exe`) | `%APPDATA%\OtimizadorPortfolio\cvm_cache` |
+
+A pasta é exibida (e pode ser trocada) na própria janela de importação.
+
+⚠️ **Por que o executável usa `%APPDATA%` e não a própria pasta:** um executável único extrai seu conteúdo para uma pasta temporária e a **apaga ao fechar**. Se o cache ficasse ali, tudo seria baixado de novo a cada abertura. Em `%APPDATA%` ele persiste — e sobrevive inclusive quando você substitui o `.exe` por uma versão nova.
+
 💡 **As colunas recebem o nome do fundo** (denominação social vigente no cadastro), que costuma ser longo. É esse nome que aparece na lista de ativos, na composição da carteira e nos gráficos.
 
 💡 O formato dos CSVs da CVM **muda conforme o ano** (nome da coluna de CNPJ, codificação, data em DD/MM/AAAA ou AAAA-MM-DD, decimal com vírgula ou ponto). Tudo isso é tratado automaticamente, e a comparação de CNPJ ignora a pontuação.
