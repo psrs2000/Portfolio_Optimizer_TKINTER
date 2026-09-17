@@ -57,18 +57,16 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 
 Para distribuir o programa a quem não tem Python instalado, dê **duplo clique em `Construir executavel.bat`**. Ele cuida de tudo: localiza o Python, cria um ambiente isolado (`.venv`), instala as dependências e chama o PyInstaller.
 
-O resultado sai em **`dist\Otimizador de Portfolio\`**.
-
-⚠️ **O programa é a PASTA inteira, não apenas o `.exe`.** Para levar a outro computador, copie ou compacte a pasta completa. Dentro dela, o arquivo que abre o programa é `Otimizador de Portfolio.exe`.
+O resultado é um **único arquivo**: `dist\Otimizador de Portfolio.exe`. Ele sozinho já é o programa — basta enviá-lo ao usuário final, que não precisa de Python nem de mais nada instalado.
 
 Duas escolhas feitas na receita de construção (`desktop_app_qt.spec`), e o porquê:
 
 | **Escolha** | **Motivo** |
 | ----------- | ---------- |
-| **Pasta** (e não arquivo único) | O executável único descompacta ~200 MB numa pasta temporária a **cada** execução, deixando toda abertura lenta. Em pasta esse custo não existe. |
+| **Arquivo único** | Simples de distribuir e impossível de errar na hora de abrir. O custo é a velocidade: o executável descompacta o próprio conteúdo a cada execução, então **sempre** leva alguns segundos para iniciar. |
 | **Console ligado** | O programa imprime o andamento da auto-otimização (steps, composição da carteira, avisos do solver). Escondendo o console esses logs se perdem. Para preferir a janela limpa, troque `console=True` por `False` no `.spec`. |
 
-💡 **A primeira abertura demora mais** — o Windows está lendo e verificando os arquivos pela primeira vez (o antivírus escaneia cada DLL nova). As aberturas seguintes são rápidas. Se incomodar, ajuda: manter a pasta fora do OneDrive e adicioná-la às exclusões do Windows Defender.
+💡 **Se um dia a velocidade de abertura pesar mais que a facilidade de distribuir**, dá para gerar em **pasta** (abre bem mais rápido, porque não há descompactação). O `.spec` traz, ao final, o bloco comentado e as instruções para essa troca.
 
 💡 As fontes opcionais (`yfinance` e `xlwings`) são instaladas **em separado** pelo `.bat`, sem interromper a construção se alguma falhar — o aplicativo funciona sem elas.
 

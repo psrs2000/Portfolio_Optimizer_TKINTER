@@ -53,16 +53,13 @@ echo.
 if errorlevel 1 goto :falhou
 
 echo.
-echo   Pronto: dist\Otimizador de Portfolio\
+echo   Pronto: dist\Otimizador de Portfolio.exe
 echo.
-echo   O programa e a PASTA inteira, nao apenas o .exe. Para levar para outro
-echo   computador, copie ou compacte a pasta completa.
+echo   Esse arquivo sozinho ja e o programa. Basta envia-lo ao usuario:
+echo   nao precisa de Python nem de mais nada instalado.
 echo.
-echo   Dentro dela, o arquivo que abre o programa e
-echo   "Otimizador de Portfolio.exe".
-echo.
-echo   A primeira abertura demora mais: o Windows le e verifica os arquivos
-echo   pela primeira vez. Depois disso ela fica rapida.
+echo   Ele leva alguns segundos para abrir, toda vez. E normal: um
+echo   executavel unico descompacta o proprio conteudo antes de iniciar.
 echo.
 pause
 exit /b 0

@@ -6,10 +6,12 @@ Use o "Construir executavel.bat", que prepara o ambiente e chama este arquivo.
 
 Decisoes tomadas aqui, e o porque:
 
-- ONE DIRECTORY (nao one-file). O one-file descompacta ~200 MB numa pasta
-  temporaria a CADA execucao, o que deixa toda abertura lenta. Em pasta, esse
-  custo nao existe; a primeira abertura ainda demora (o Windows le e escaneia
-  os arquivos pela primeira vez), mas as seguintes sao rapidas.
+- ARQUIVO UNICO (one-file). Gera um unico .exe, que e o programa inteiro:
+  simples de enviar ao usuario final, que nao tem como errar qual arquivo
+  abrir. O custo e a abertura: o executavel descompacta o conteudo numa pasta
+  temporaria a CADA execucao, entao ele sempre leva alguns segundos para
+  abrir. Se um dia a velocidade pesar mais que a facilidade de distribuir,
+  basta reativar o bloco COLLECT no final deste arquivo (ver comentario la).
 
 - CONSOLE LIGADO. O programa imprime o andamento da auto-otimizacao (steps,
   composicao da carteira, avisos do solver). Escondendo o console esses logs
@@ -17,7 +19,8 @@ Decisoes tomadas aqui, e o porque:
   aplicativo continua funcionando, apenas sem os logs.
 
 - UPX DESLIGADO. Comprime os arquivos, mas cada um precisa ser descomprimido
-  ao carregar, atrasando justamente a abertura.
+  ao carregar, atrasando ainda mais a abertura — que no modo arquivo unico ja
+  e o ponto sensivel.
 """
 
 # Modulos locais do projeto. Sao importados normalmente pelo aplicativo, mas
@@ -79,16 +82,20 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# Arquivo unico: binarios e dados entram DENTRO do proprio .exe.
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='Otimizador de Portfolio',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -97,12 +104,22 @@ exe = EXE(
     entitlements_file=None,
 )
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name='Otimizador de Portfolio',
-)
+# ---------------------------------------------------------------------------
+# Para voltar ao modo PASTA (abertura bem mais rapida, porem varios arquivos
+# para distribuir): em EXE acima, troque as tres linhas
+#     a.scripts, a.binaries, a.datas, [],
+# por
+#     a.scripts, [],
+# acrescente  exclude_binaries=True,  remova  runtime_tmpdir=None,  e
+# descomente o bloco abaixo.
+#
+# coll = COLLECT(
+#     exe,
+#     a.binaries,
+#     a.datas,
+#     strip=False,
+#     upx=False,
+#     upx_exclude=[],
+#     name='Otimizador de Portfolio',
+# )
+# ---------------------------------------------------------------------------
