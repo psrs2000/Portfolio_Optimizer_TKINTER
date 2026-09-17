@@ -223,6 +223,37 @@ def carregar_cadastro(caminho_csv):
     return vigentes[['CNPJ_DIGITOS', 'CNPJ_FUNDO', 'DENOM_SOCIAL']]
 
 
+def converter_datas(serie):
+    """
+    Converte a coluna DT_COMPTC respeitando o formato do arquivo.
+
+    Os informes trazem a data em dois formatos conforme o ano:
+        dd/mm/aaaa   (arquivos mais antigos)
+        aaaa-mm-dd   (arquivos mais novos)
+
+    O formato é DETECTADO e aplicado explicitamente, como no filtro original.
+    Não usar dayfirst=True com format='mixed': essa combinação lê '2024-01-05'
+    como 2024-05-01, trocando dia e mês sempre que o dia é menor ou igual a 12
+    — e o estrago é silencioso, porque a data continua existindo.
+
+    Linhas que não casarem com o formato detectado são tentadas no outro, para
+    o caso raro de um arquivo misturar os dois.
+    """
+    s = serie.astype(str).str.strip()
+    amostra = next((v for v in s if v and v.lower() != 'nan'), '')
+
+    if '/' in amostra:
+        principal, reserva = '%d/%m/%Y', '%Y-%m-%d'
+    else:
+        principal, reserva = '%Y-%m-%d', '%d/%m/%Y'
+
+    datas = pd.to_datetime(s, format=principal, errors='coerce')
+    faltando = datas.isna()
+    if faltando.any():
+        datas[faltando] = pd.to_datetime(s[faltando], format=reserva, errors='coerce')
+    return datas
+
+
 def processar_csv_diario(caminho, cnpjs_digitos):
     """
     Lê um informe diário mensal e devolve só as linhas dos fundos pedidos,
@@ -259,9 +290,8 @@ def processar_csv_diario(caminho, cnpjs_digitos):
         return None
 
     df = pd.concat(partes, ignore_index=True)
-    # Datas: aceita dd/mm/aaaa e aaaa-mm-dd
-    df['DT_COMPTC'] = pd.to_datetime(df['DT_COMPTC'], errors='coerce',
-                                     dayfirst=True, format='mixed')
+    # Datas: formato detectado explicitamente (ver converter_datas)
+    df['DT_COMPTC'] = converter_datas(df['DT_COMPTC'])
     df['VL_QUOTA'] = pd.to_numeric(
         df['VL_QUOTA'].astype(str).str.replace(',', '.', regex=False),
         errors='coerce')
