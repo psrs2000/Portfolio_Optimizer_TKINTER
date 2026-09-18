@@ -94,6 +94,21 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
     Calcula ranking de ativos - VERSÃO CORRIGIDA
     ATUALIZADO: Correlação agora é entre integrais (ativo vs referência)
     COM: Normalização final (0 a 1)
+
+    risk_free_column:
+        '<nome>' -> essa coluna é a referência;
+        None     -> NÃO há referência: usa-se a linha do zero no lugar dela.
+
+    Sem referência, a diferença "ativo − referência" vira o próprio retorno do
+    ativo, e o ranking passa a medir a qualidade da evolução dele por si só.
+    A CORRELAÇÃO, porém, deixa de existir (correlacionar com uma série
+    constante não define nada), então esse componente é retirado da conta e o
+    peso é redistribuído entre inclinação e desvio.
+
+    Antes, sem referência, a função tomava a PRIMEIRA COLUNA como referência de
+    qualquer jeito: aquele ativo sumia do ranking sem aviso e, como a
+    auto-otimização escolhe os ativos pelo ranking, ele nunca podia entrar na
+    carteira.
     """
     try:
         from scipy import stats
@@ -118,16 +133,15 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
             if risk_free_column and risk_free_column in df_work.columns:
                 ref_col = risk_free_column
                 asset_columns = [col for col in df_work.columns if col not in ['Data', risk_free_column]]
-            elif len(df_work.columns) > 2:
-                # Assumir segunda coluna como referência se contém palavras-chave
-                second_col = df_work.columns[1]
-                if any(term in second_col.lower() for term in ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']):
-                    ref_col = second_col
-                    asset_columns = [col for col in df_work.columns if col not in ['Data', second_col]]
-                else:
-                    ref_col = df_work.columns[1]
-                    asset_columns = df_work.columns[2:].tolist()
+                ref_serie = df_work[ref_col]
             else:
+                # Sem referência: a linha do zero faz esse papel. Todos os
+                # ativos entram no ranking, nenhum é consumido como benchmark.
+                ref_col = None
+                asset_columns = [col for col in df_work.columns if col != 'Data']
+                ref_serie = pd.Series(0.0, index=df_work.index)
+
+            if not asset_columns:
                 return None
         else:
             return None
@@ -139,7 +153,7 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
         diferenca_data['Data'] = dates_col
 
         for asset in asset_columns:
-            diferenca_data[f"{asset}_diff"] = df_work[asset] - df_work[ref_col]
+            diferenca_data[f"{asset}_diff"] = df_work[asset] - ref_serie
 
         df_diferenca = pd.DataFrame(diferenca_data)
 
@@ -190,22 +204,28 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
                 slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, y_data)
                 r_squared = r_value ** 2
 
-                # NOVA CORRELAÇÃO: Entre integrais (evoluções acumuladas)
-                asset_integral = df_work[asset].cumsum().values
-                ref_integral = df_work[ref_col].cumsum().values
-                correlation = np.corrcoef(asset_integral, ref_integral)[0, 1]
+                # NOVA CORRELAÇÃO: Entre integrais (evoluções acumuladas).
+                # Sem referência não há com o que correlacionar — a série seria
+                # constante e o resultado, indefinido. O componente sai da conta
+                # e seu peso é redistribuído entre inclinação e desvio.
+                if ref_col is None:
+                    correlation = np.nan
+                else:
+                    asset_integral = df_work[asset].cumsum().values
+                    ref_integral = ref_serie.cumsum().values
+                    correlation = np.corrcoef(asset_integral, ref_integral)[0, 1]
 
                 std_dev = df_diferenca[f"{asset}_diff"].std()
 
                 slope_norm = slope / max_slope if max_slope > 0 else 0
                 std_dev_norm = std_dev / max_deviation if max_deviation > 0 else 0
 
-                correlation_norm = correlation
-
                 numerador = (peso_inc * slope_norm +
-                             peso_desv * (1 - std_dev_norm) +
-                             peso_cor * correlation_norm)
-                denominador = peso_inc + peso_desv + peso_cor
+                             peso_desv * (1 - std_dev_norm))
+                denominador = peso_inc + peso_desv
+                if ref_col is not None:
+                    numerador += peso_cor * correlation
+                    denominador += peso_cor
 
                 indice_bruto = numerador / denominador if denominador > 0 else 0
 
@@ -259,7 +279,7 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
 
         return {
             'ranking': df_ranking,
-            'referencia': ref_col,
+            'referencia': ref_col,     # None = ranking medido contra a linha do zero
             'total_ativos': len(asset_columns)
         }
 
@@ -2299,8 +2319,10 @@ class PortfolioOptimizerGUI(QMainWindow):
 
         df_ranking = ranking_result['ranking']
 
+        ref = ranking_result['referencia']
+        texto_ref = ref if ref else "sem referência (medido contra a linha do zero)"
         info_text = (f"✅ Ranking calculado: {ranking_result['total_ativos']} ativos\n"
-                     f"📊 Referência: {ranking_result['referencia']}")
+                     f"📊 Referência: {texto_ref}")
         self.ranking_results_layout.addWidget(QLabel(info_text))
 
         columns = ('Posição', 'Ativo', 'Índice', 'Inclinação', 'R²', 'Correlação', 'Desvio')
@@ -2316,7 +2338,8 @@ class PortfolioOptimizerGUI(QMainWindow):
                 f"{row['Índice']:.4f}",
                 f"{row['Inclinação_Norm']:.3f}",
                 f"{row['R²']:.3f}",
-                f"{row['Correlação']:.3f}",
+                # Sem referência a correlação não existe: mostra "—" em vez de "nan"
+                "—" if pd.isna(row['Correlação']) else f"{row['Correlação']:.3f}",
                 f"{row['Desvio_Norm']:.3f}",
             )
             r = table.rowCount()
@@ -2866,6 +2889,9 @@ class PortfolioOptimizerGUI(QMainWindow):
             self.manual_risk_entry.setEnabled(True)
             self.update_objective_options()
 
+        # A aba Auto-Otimização repete a referência no cabeçalho
+        self._atualizar_rotulo_ref_auto()
+
         self.assets_listbox.delete(0, END)
         for asset in asset_columns:
             self.assets_listbox.insert(END, asset)
@@ -3119,6 +3145,28 @@ class PortfolioOptimizerGUI(QMainWindow):
             messagebox.showinfo("Sucesso", msg)
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao aplicar os dados importados:\n{str(e)}")
+
+    def _atualizar_rotulo_ref_auto(self):
+        """
+        Mostra na aba Auto-Otimização qual é a referência em uso — a mesma da
+        aba Dados, escolhida lá. Repetir a informação aqui evita a dúvida de
+        estar olhando resultados calculados contra outro benchmark.
+        """
+        lbl = getattr(self, 'auto_ref_label', None)
+        if lbl is None:
+            return
+        if getattr(self, 'dados_brutos', None) is None:
+            lbl.setText("🏛️ Referência: definida na aba Dados, ao carregar os dados.")
+            lbl.setStyleSheet("color: gray;")
+        elif self.has_risk_free:
+            lbl.setText(f"🏛️ Referência (definida na aba Dados): "
+                        f"<b>{self.risk_free_column_name}</b>")
+            lbl.setStyleSheet("color: green;")
+        else:
+            lbl.setText("🏛️ <b>Sem taxa de referência</b> — Ref% fica em 0% e o "
+                        "ranking mede cada ativo contra a linha do zero. "
+                        "Para definir uma, use \"Alterar Ativo de Referência\" na aba Dados.")
+            lbl.setStyleSheet("color: #b36b00;")
 
     def _coluna_referencia(self):
         """Informa ao otimizador qual coluna é a referência.
@@ -4336,7 +4384,9 @@ Isso ajuda a detectar:
 
         # Cabeçalho
         header_box = QGroupBox("🤖 Auto-Otimização Inteligente")
-        header_l = QHBoxLayout(header_box)
+        header_v = QVBoxLayout(header_box)
+        header_l = QHBoxLayout()
+        header_v.addLayout(header_l)
         lbl = QLabel("Walk-Forward Optimization com Ranking Dinâmico Anti-Overfitting")
         lbl.setFont(bold())
         header_l.addWidget(lbl)
@@ -4344,6 +4394,14 @@ Isso ajuda a detectar:
         self.status_auto_label = QLabel("Aguardando configuração...")
         self.status_auto_label.setStyleSheet("color: blue;")
         header_l.addWidget(self.status_auto_label)
+
+        # A referência usada aqui é a MESMA da aba Dados. Fica à vista para não
+        # restar dúvida sobre qual benchmark alimentou o ranking e as métricas.
+        self.auto_ref_label = QLabel()
+        self.auto_ref_label.setWordWrap(True)
+        header_v.addWidget(self.auto_ref_label)
+        self._atualizar_rotulo_ref_auto()
+
         main_l.addWidget(header_box)
 
         content_l = QHBoxLayout()

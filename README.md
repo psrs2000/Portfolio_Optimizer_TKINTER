@@ -475,6 +475,18 @@ Fórmula do índice:
 
 **Índice = \[P_inc × Inclinação_norm + P_desv × (1 − Desvio_norm) + P_cor × Correlação\] ÷ (P_inc + P_desv + P_cor)**
 
+### Quando não há taxa de referência
+
+O ranking é relativo por natureza: ele mede cada ativo **contra alguma coisa**. Sem referência definida, esse papel passa a ser da **linha do zero** — a diferença "ativo − referência" vira o próprio retorno do ativo, e o índice passa a medir a qualidade da evolução dele por si só (sobe de forma consistente? em linha reta?).
+
+A **correlação deixa de existir** nesse caso (não há com o que correlacionar), então esse componente sai da conta e seu peso é redistribuído:
+
+**Índice = \[P_inc × Inclinação_norm + P_desv × (1 − Desvio_norm)\] ÷ (P_inc + P_desv)**
+
+Na tabela, a coluna Correlação aparece como **—**, e o cabeçalho informa "sem referência (medido contra a linha do zero)".
+
+⚠️ **Corrigido na versão atual:** antes, sem referência, o programa tomava a **primeira coluna como referência de qualquer jeito**. Aquele ativo desaparecia do ranking sem aviso — e, como a Auto-Otimização escolhe os ativos pelo ranking, ele **nunca podia entrar na carteira**, em nenhum step. Se você rodou auto-otimizações sem referência em versões anteriores, vale repetir: os resultados mudam.
+
 ## 7.2 Configurar e Calcular
 
 - Marque o checkbox '🤖 Ativar ranking automático de ativos'. O painel de configuração aparecerá.
@@ -595,6 +607,8 @@ Disponível apenas quando uma taxa de referência foi detectada. Exibe a diferen
 # 10\. Aba Auto-Otimização - Walk-Forward
 
 A Auto-Otimização executa automaticamente centenas ou milhares de testes walk-forward, variando sistematicamente os parâmetros de otimização para identificar as combinações mais robustas. É a funcionalidade mais avançada do sistema.
+
+🏛️ **A referência é a mesma da aba Dados** — a detectada na importação ou a que você escolheu em **Alterar Ativo de Referência** (seção 3.2.3). Ela alimenta o ranking de cada step, a coluna **Ref%**, a Meta relativa e os objetivos de excesso. Para não restar dúvida, o cabeçalho desta aba **mostra qual referência está em uso**: em verde quando há uma, em laranja quando não há (com o aviso de que o Ref% fica em 0% e o ranking passa a medir contra a linha do zero — ver seção 7.1).
 
 ## 10.1 Conceito de Walk-Forward
 
