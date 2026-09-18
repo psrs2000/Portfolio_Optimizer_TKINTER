@@ -2284,6 +2284,27 @@ class PortfolioOptimizerGUI(QMainWindow):
         btn_calc.clicked.connect(self.calculate_ranking)
         cfg_l.addWidget(btn_calc)
 
+        # Recálculo automático antes de cada otimização manual.
+        # Num walk-forward feito à mão, a cada nova janela o ranking muda e a
+        # seleção anterior fica velha. Sem isto o programa aceita a lista
+        # antiga calada; com isto ele refaz o trabalho de quem usa.
+        chk_auto = QCheckBox("🔄 Recalcular o ranking e reselecionar os ativos "
+                             "antes de cada otimização")
+        chk_auto.setChecked(True)
+        self.auto_rerank = BoolVar(chk_auto)
+        cfg_l.addWidget(chk_auto)
+
+        dica = QLabel(
+            "Marcado: ao clicar em Otimizar, o ranking é refeito para o período "
+            "processado no momento e os ativos são reselecionados pela faixa de "
+            "score abaixo. É o indicado para walk-forward manual, em que a cada "
+            "nova janela o ranking muda.\n"
+            "Desmarcado: vale a lista que estiver selecionada na aba Dados, "
+            "seja ela de qual período for.")
+        dica.setStyleSheet("color: gray;")
+        dica.setWordWrap(True)
+        cfg_l.addWidget(dica)
+
         self.ranking_config_frame.setVisible(False)
         layout.addWidget(self.ranking_config_frame)
 
@@ -2352,6 +2373,18 @@ class PortfolioOptimizerGUI(QMainWindow):
             messagebox.showerror("Erro", f"Erro no cálculo: {str(e)}")
 
     def display_ranking_results(self, ranking_result):
+        # Os campos de score são recriados abaixo, junto com o resto do painel.
+        # Sem guardar o que está neles, todo recálculo devolveria a faixa ao
+        # padrão 0,70–1,00 e apagaria em silêncio o critério do usuário — o que
+        # seria fatal com o recálculo automático, que refaz isso a cada
+        # otimização.
+        if hasattr(self, 'score_min_var'):
+            try:
+                self.score_min_lembrado = self.score_min_var.get()
+                self.score_max_lembrado = self.score_max_var.get()
+            except Exception:
+                pass
+
         clear_widget(self.ranking_results_frame)
 
         df_ranking = ranking_result['ranking']
@@ -2397,14 +2430,14 @@ class PortfolioOptimizerGUI(QMainWindow):
         min_col = QVBoxLayout()
         min_col.addWidget(QLabel("📉 Score mínimo:"))
         e_min = QLineEdit()
-        self.score_min_var = NumVar(e_min, 0.7)
+        self.score_min_var = NumVar(e_min, getattr(self, 'score_min_lembrado', 0.7))
         min_col.addWidget(e_min)
         range_l.addLayout(min_col)
 
         max_col = QVBoxLayout()
         max_col.addWidget(QLabel("📈 Score máximo:"))
         e_max = QLineEdit()
-        self.score_max_var = NumVar(e_max, 1.0)
+        self.score_max_var = NumVar(e_max, getattr(self, 'score_max_lembrado', 1.0))
         max_col.addWidget(e_max)
         range_l.addLayout(max_col)
         sel_l.addLayout(range_l)
@@ -3742,12 +3775,75 @@ class PortfolioOptimizerGUI(QMainWindow):
         selected_indices = self.assets_listbox.curselection()
         return [self.assets_listbox.get(i) for i in selected_indices]
 
+    def _rerank_automatico(self):
+        """
+        Refaz ranking e seleção antes da otimização manual, quando pedido.
+
+        Existe por causa do walk-forward feito à mão: a cada janela nova o
+        ranking muda, e a seleção da janela anterior fica velha. Antes, o
+        programa aceitava essa lista antiga sem dizer nada — e o resultado
+        saía com cara de certo.
+
+        Só age com "Ativar ranking automático de ativos" E a caixa de recálculo
+        marcadas. Devolve False para interromper a otimização quando não dá
+        para montar uma seleção válida.
+        """
+        self.ultimo_rerank = None
+        if not (self.use_ranking.get() and self.auto_rerank.get()):
+            return True     # lista fixa: segue com o que estiver selecionado
+
+        problema = self._problema_pesos_ranking()
+        if problema:
+            messagebox.showerror("Erro", problema)
+            return False
+
+        ranking_result = calculate_asset_ranking(
+            self.df, self.risk_free_column_name,
+            self.peso_inc_var.get(), self.peso_desv_var.get(), self.peso_cor_var.get())
+
+        if ranking_result is None:
+            messagebox.showerror(
+                "Erro", "Não foi possível calcular o ranking para este período.")
+            return False
+
+        self.display_ranking_results(ranking_result)
+
+        score_min = self.score_min_var.get()
+        score_max = self.score_max_var.get()
+        if score_min > score_max:
+            messagebox.showerror(
+                "Erro", "Na aba Ranking, o score mínimo está maior que o máximo.")
+            return False
+
+        df_rank = ranking_result['ranking']
+        escolhidos = df_rank[(df_rank['Índice'] >= score_min) &
+                             (df_rank['Índice'] <= score_max)]['Ativo'].tolist()
+
+        if len(escolhidos) < 2:
+            messagebox.showerror(
+                "Erro",
+                f"O ranking deste período devolveu apenas {len(escolhidos)} ativo(s) "
+                f"na faixa de score {score_min:.2f} – {score_max:.2f}, e a otimização "
+                f"precisa de pelo menos 2.\n\n"
+                f"Alargue a faixa na aba Ranking, ou desmarque o recálculo "
+                f"automático para usar a lista selecionada à mão.")
+            return False
+
+        self.select_assets_by_score()
+        print(f"🔄 Ranking refeito para o período: {len(escolhidos)} ativo(s) "
+              f"na faixa {score_min:.2f}–{score_max:.2f} → {', '.join(escolhidos)}")
+        self.ultimo_rerank = escolhidos
+        return True
+
     # -------------------------------------------------------------------------
     # OTIMIZAÇÃO
     # -------------------------------------------------------------------------
     def optimize_portfolio(self):
         if self.df is None:
             messagebox.showerror("Erro", "Carregue um arquivo Excel primeiro!")
+            return
+
+        if not self._rerank_automatico():
             return
 
         selected_assets = self.get_selected_assets()
@@ -3866,10 +3962,11 @@ class PortfolioOptimizerGUI(QMainWindow):
                         "Otimização concluída com ressalvas",
                         "⚠️ Otimização concluída, mas SEM convergência plena.\n\n"
                         f"{self.result['degraded_message']}"
-                        + self._meta_message()
+                        + self._rerank_message() + self._meta_message()
                     )
                 else:
-                    messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!" + self._meta_message())
+                    messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!"
+                                        + self._rerank_message() + self._meta_message())
                 self.notebook.setCurrentWidget(self.tab_results)
             else:
                 messagebox.showerror("Erro", f"❌ {self.result['message']}")
@@ -3878,6 +3975,16 @@ class PortfolioOptimizerGUI(QMainWindow):
             if progress_window is not None:
                 progress_window.close()
             messagebox.showerror("Erro", f"Erro durante otimização:\n{str(e)}")
+
+    def _rerank_message(self):
+        """Avisa que a seleção foi refeita — quem otimiza precisa saber que a
+        carteira não saiu da lista que ele tinha marcado, e sim do ranking
+        recalculado para este período."""
+        escolhidos = getattr(self, 'ultimo_rerank', None)
+        if not escolhidos:
+            return ""
+        return (f"\n\n🔄 Ranking recalculado para este período: "
+                f"{len(escolhidos)} ativo(s) selecionado(s) por score.")
 
     def _meta_message(self):
         """Texto sobre o resultado da meta (vazio se meta não foi usada)."""

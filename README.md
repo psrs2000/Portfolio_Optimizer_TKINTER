@@ -528,6 +528,35 @@ Abaixo da tabela, defina um intervalo de score para selecionar ativos automatica
 
 💡 A seleção por score respeita as configurações de short selling e restrições individuais já definidas. Essas configurações são preservadas mesmo após a atualização da seleção de ativos.
 
+💡 A faixa de score que você digitar é **preservada** quando o ranking é recalculado. (Antes ela voltava ao padrão 0,70–1,00 a cada recálculo, apagando o critério em silêncio.)
+
+## 7.5 Recálculo Automático Antes de Otimizar
+
+Na caixa **⚙️ Configurar Pesos dos Parâmetros** existe a opção **🔄 Recalcular o ranking e reselecionar os ativos antes de cada otimização**, marcada por padrão.
+
+| Estado | Ao clicar em Otimizar |
+| ------ | --------------------- |
+| **Marcada** (padrão) | O ranking é refeito para o período processado no momento, e os ativos são reselecionados pela faixa de score. |
+| **Desmarcada** | Vale a lista que estiver selecionada na aba Dados, seja ela de qual período for (comportamento anterior). |
+
+Só tem efeito com **🤖 Ativar ranking automático de ativos** marcado. Sem isso, a otimização usa a seleção manual, como sempre.
+
+**Para que serve.** Num walk-forward feito à mão — você avança a janela um mês, processa e otimiza, repetidamente — o ranking muda a cada janela, e a seleção da janela anterior fica velha. Sem essa opção, o programa aceitava a lista antiga **sem dizer nada**: nenhum erro, nenhum aviso, e o resultado saía com cara de certo. Bastava esquecer de clicar em *Calcular Ranking* + *Selecionar Ativos por Score*.
+
+Exemplo real da diferença, movendo a janela de `01/01/23–31/12/23` para `01/02/23–31/01/24` (um único mês a mais):
+
+| Ativo | Score na 1ª janela | Score na 2ª janela |
+| ----- | ------------------ | ------------------ |
+| BOM O ANO TODO | 1,000 | 1,000 |
+| DISPARA EM JAN24 | 0,067 | 0,000 |
+| MEDIANO | 0,000 | 0,252 |
+
+Segundo e terceiro lugares trocaram de posição.
+
+Ao final da otimização, a mensagem de sucesso informa que o ranking foi recalculado e quantos ativos entraram — para você não confundir a carteira obtida com a lista que estava marcada antes.
+
+⚠️ Se a faixa de score devolver **menos de 2 ativos** naquele período, a otimização é interrompida com explicação (alargue a faixa, ou desmarque o recálculo automático). Melhor parar do que otimizar sobre uma seleção que não faz sentido.
+
 # 8\. Aba Resultados - Análise do Portfólio
 
 Após a otimização, esta aba exibe um painel completo com três colunas de métricas lado a lado e a composição do portfólio com o gráfico de evolução.
