@@ -146,6 +146,15 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
         else:
             return None
 
+        # Peso útil zero: nada distinguiria os ativos (todos sairiam com o
+        # mesmo índice). A interface barra isso antes, com explicação; aqui é a
+        # rede de segurança para chamadas por outro caminho.
+        peso_util = peso_inc + peso_desv + (peso_cor if ref_col is not None else 0.0)
+        if peso_util <= 0:
+            print("❌ Ranking: os pesos informados não distinguem os ativos "
+                  "(peso útil zero).")
+            return None
+
         # ===============================
         # PASSO 1: CRIAR ABA "DIFERENÇA"
         # ===============================
@@ -2293,9 +2302,37 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.ranking_config_frame.setVisible(show)
         self.ranking_results_frame.setVisible(show)
 
+    def _problema_pesos_ranking(self):
+        """
+        Verifica se os pesos do ranking permitem classificar alguma coisa.
+        Devolve a mensagem do problema, ou None se estiver tudo bem.
+
+        Com peso útil zero todos os ativos empatam em 0,5 e a classificação
+        perde o sentido: o filtro de Score passa a cortar todos ou nenhum,
+        dependendo do intervalo. Melhor avisar do que entregar isso calado.
+        """
+        pi, pd_, pc = (self.peso_inc_var.get(), self.peso_desv_var.get(),
+                       self.peso_cor_var.get())
+        if pi + pd_ + pc <= 0:
+            return ("Os três pesos do ranking estão em zero (aba Ranking).\n\n"
+                    "Sem nenhum critério, todos os ativos empatam e a "
+                    "classificação não significa nada. Dê peso a pelo menos um.")
+        if not self.has_risk_free and pi + pd_ <= 0:
+            return ("Só a Correlação tem peso no ranking (aba Ranking), mas a "
+                    "base está SEM taxa de referência — e sem referência não há "
+                    "com o que correlacionar.\n\n"
+                    "Dê peso à Inclinação ou à Estabilidade, ou defina uma "
+                    "referência em \"Alterar Ativo de Referência\", na aba Dados.")
+        return None
+
     def calculate_ranking(self):
         if self.df is None:
             messagebox.showerror("Erro", "Carregue dados primeiro!")
+            return
+
+        problema = self._problema_pesos_ranking()
+        if problema:
+            messagebox.showerror("Erro", problema)
             return
 
         try:
@@ -4956,6 +4993,12 @@ Isso ajuda a detectar:
                         'objective': obj_mapping[obj_key],
                         'rank_min': self.rank_min_var.get(),
                         'rank_max': self.rank_max_var.get(),
+                        # Pesos do ranking, vindos da aba Ranking. Antes ficavam
+                        # fixos em 0,33 aqui, e mexer nos controles de lá não
+                        # tinha efeito nenhum sobre a auto-otimização.
+                        'peso_inc': self.peso_inc_var.get(),
+                        'peso_desv': self.peso_desv_var.get(),
+                        'peso_cor': self.peso_cor_var.get(),
                         'weight_min': self.weight_min_var.get() / 100,
                         'weight_max': self.weight_max_var.get() / 100,
                         'use_shorts': self.use_auto_shorts.get() and len(self.auto_short_weights) > 0,
@@ -5175,7 +5218,9 @@ Isso ajuda a detectar:
 
             ranking_result = calculate_asset_ranking(
                 df_otim, self.risk_free_column_name,
-                peso_inc=0.33, peso_desv=0.33, peso_cor=0.33
+                peso_inc=config['peso_inc'],
+                peso_desv=config['peso_desv'],
+                peso_cor=config['peso_cor']
             )
 
             if not ranking_result:
@@ -5729,6 +5774,11 @@ Isso ajuda a detectar:
 
         if not any(var.get() for var in self.objectives.values()):
             messagebox.showerror("Erro", "Selecione pelo menos um objetivo!")
+            return False
+
+        problema = self._problema_pesos_ranking()
+        if problema:
+            messagebox.showerror("Erro", problema)
             return False
 
         return True

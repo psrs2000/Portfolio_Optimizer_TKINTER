@@ -485,6 +485,15 @@ A **correlação deixa de existir** nesse caso (não há com o que correlacionar
 
 Na tabela, a coluna Correlação aparece como **—**, e o cabeçalho informa "sem referência (medido contra a linha do zero)".
 
+### Pesos sem critério: o programa avisa
+
+Os pesos precisam distinguir alguma coisa. Duas combinações não distinguem nada, e o programa **barra com explicação** em vez de entregar um ranking sem sentido (todos os ativos empatariam em 0,5, e o filtro de Score passaria a cortar todos ou nenhum):
+
+- **Os três pesos em zero** — nenhum critério.
+- **Só a Correlação com peso, e a base sem referência** — a correlação não existe sem referência (ver acima).
+
+O aviso aparece tanto ao calcular o ranking quanto ao iniciar a Auto-Otimização.
+
 ⚠️ **Corrigido na versão atual:** antes, sem referência, o programa tomava a **primeira coluna como referência de qualquer jeito**. Aquele ativo desaparecia do ranking sem aviso — e, como a Auto-Otimização escolhe os ativos pelo ranking, ele **nunca podia entrar na carteira**, em nenhum step. Se você rodou auto-otimizações sem referência em versões anteriores, vale repetir: os resultados mudam.
 
 ## 7.2 Configurar e Calcular
@@ -609,6 +618,10 @@ Disponível apenas quando uma taxa de referência foi detectada. Exibe a diferen
 A Auto-Otimização executa automaticamente centenas ou milhares de testes walk-forward, variando sistematicamente os parâmetros de otimização para identificar as combinações mais robustas. É a funcionalidade mais avançada do sistema.
 
 🏛️ **A referência é a mesma da aba Dados** — a detectada na importação ou a que você escolheu em **Alterar Ativo de Referência** (seção 3.2.3). Ela alimenta o ranking de cada step, a coluna **Ref%**, a Meta relativa e os objetivos de excesso. Para não restar dúvida, o cabeçalho desta aba **mostra qual referência está em uso**: em verde quando há uma, em laranja quando não há (com o aviso de que o Ref% fica em 0% e o ranking passa a medir contra a linha do zero — ver seção 7.1).
+
+🏆 **Os pesos do ranking também são os da aba Ranking** — Inclinação, Estabilidade e Correlação (seção 7.1). O que você ajustar lá é o que roda aqui, em cada step. O que a Auto-Otimização define por conta própria é apenas o **Score Min/Max**, que corta a lista já classificada.
+
+⚠️ **Corrigido na versão atual:** os três pesos ficavam **fixos em 0,33** dentro da Auto-Otimização, ignorando os controles da aba Ranking. Dava para ajustá-los, ver a ordem mudar na aba Ranking, rodar a Auto-Otimização e ela usar outra coisa — sem aviso. Como o padrão dos controles é exatamente 0,33 cada, **quem nunca os moveu obtém resultados idênticos aos de antes**; só muda para quem os ajustou.
 
 ## 10.1 Conceito de Walk-Forward
 
