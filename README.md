@@ -406,6 +406,32 @@ Detalhes da leitura:
 
 💡 Carregue os dados (aba Dados) antes de importar, pois o sistema casa os ativos do arquivo com os ativos disponíveis na planilha carregada.
 
+### ⚠️ Não use junto com o recálculo automático do ranking
+
+**Carregar uma carteira aqui e deixar o recálculo automático do ranking ligado (aba Ranking, seção 7.5) são coisas que se contradizem.** Uma diz *"quero exatamente estes ativos com estes pesos"*; a outra diz *"escolha os ativos por mim"*. Use uma ou outra, nunca as duas ao mesmo tempo.
+
+O que acontece se as duas ficarem ativas: ao clicar em Otimizar, o ranking é refeito e **substitui a seleção**. Os ativos da sua carteira que sobrevivem ao ranking mantêm o peso travado; os que o ranking descarta **somem da carteira sem aviso**; e os que o ranking traz de novo entram com peso livre.
+
+Num teste com uma carteira de 19 ativos a 5,26% cada:
+
+```
+da carteira original sobreviveram: 17 de 19  (89%)
+mantiveram peso idêntico         : 17 de 17
+entraram novos                   : 2 (com 6,5% e 4,1%)
+```
+
+Parece funcionar — e é justamente esse o risco, porque o resultado sai com cara de correto. Mas não é a sua carteira: dois ativos foram descartados em silêncio.
+
+Há ainda uma condição que precisa se sustentar para o resultado fechar em 100%:
+
+```
+soma dos pesos travados  +  (nº de ativos novos × peso máximo)  ≥  100%
+```
+
+Quando ela falha, a otimização entrega a melhor carteira viável com o aviso de **"SEM convergência plena"** e uma soma diferente de 100% (num teste, 99,42%). Aí pelo menos há sinal na tela.
+
+✅ **Como proceder:** antes de carregar uma carteira na aba Avançado, desmarque **🔄 Recalcular o ranking... antes de cada otimização** na aba Ranking — ou desative o ranking automático por completo. Quando quiser voltar a deixar o ranking escolher os ativos, limpe as restrições individuais antes.
+
 ## 5.2 Janela de Configuração
 
 A janela exibe todos os ativos selecionados na aba Dados. Para cada ativo:
@@ -558,6 +584,8 @@ Segundo e terceiro lugares trocaram de posição.
 Ao final da otimização, a mensagem de sucesso informa que o ranking foi recalculado e quantos ativos entraram — para você não confundir a carteira obtida com a lista que estava marcada antes.
 
 ⚠️ Se a faixa de score devolver **menos de 2 ativos** naquele período, a otimização é interrompida com explicação (alargue a faixa, ou desmarque o recálculo automático). Melhor parar do que otimizar sobre uma seleção que não faz sentido.
+
+⚠️ **Não use esta opção junto com uma carteira importada na aba Avançado** (seção 5.1.1). As duas se contradizem: a carteira fixa os ativos e os pesos, o recálculo escolhe os ativos por conta própria. Com as duas ligadas, o ranking substitui a seleção e os ativos da carteira que ele descarta somem sem aviso. Antes de carregar uma carteira, desmarque esta caixa; antes de voltar a usar o ranking, limpe as restrições individuais. A seção 5.1.1 detalha o que acontece e por que o resultado engana.
 
 # 8\. Aba Resultados - Análise do Portfólio
 
@@ -820,7 +848,8 @@ Para obter os melhores resultados, siga esta sequência:
 
 - O peso de correlação pode ser ajustado para zero se você não quiser que a relação com o benchmark influencie o ranking.
 - Correlações negativas podem ser desejáveis para ativos de hedge: ajuste o peso de correlação para valores negativos não é suportado diretamente, mas ativos com correlação negativa obterão scores menores, o que pode ser usado para identificá-los e inclui-los como short.
-- Recalcule o ranking sempre que mudar o período de análise, pois os parâmetros são recalculados com base nos dados do período configurado.
+- Recalcule o ranking sempre que mudar o período de análise, pois os parâmetros são recalculados com base nos dados do período configurado. A opção de recálculo automático (seção 7.5) faz isso por você.
+- **Ranking e carteira importada não convivem.** Se você importou uma carteira na aba Avançado, desligue o recálculo automático do ranking antes de otimizar — caso contrário o ranking refaz a seleção e descarta parte da sua carteira em silêncio. Ver seções 5.1.1 e 7.5.
 
 ## 12.6 Robustez da Otimização (Multi-Start)
 
