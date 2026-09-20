@@ -812,9 +812,9 @@ def pasta_dados_usuario(nome_app="OtimizadorPortfolio"):
 
 
 # Preferências do usuário que sobrevivem ao fechamento do programa.
-# Hoje só existe uma, mas o arquivo já nasce como dicionário para caber outras.
 ARQUIVO_PREFERENCIAS = "preferencias.json"
 PREF_LIMPAR_CACHE = "limpar_cache_cvm_ao_sair"
+PREF_PASTA_CACHE = "pasta_cache_cvm"
 
 
 def _caminho_preferencias():
@@ -849,6 +849,32 @@ def gravar_preferencia(chave, valor):
             json.dump(dados, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+
+def pasta_cache_cvm_inicial():
+    """
+    Pasta de cache com que a janela da CVM abre — e que passa a EXISTIR aqui.
+
+    Dois motivos para criá-la neste ponto, e não só na hora do download:
+    empacotado como executável o padrão fica em %APPDATA%, onde nada existe
+    ainda na primeira execução; e enquanto a pasta não existe o botão
+    "Procurar..." não consegue chegar nela, de modo que não há onde deixar o
+    CNPJ.csv antes da primeira busca.
+
+    Prefere a última pasta escolhida pelo usuário. Se ela sumiu — pendrive
+    removido, pasta apagada — e não puder ser recriada, volta ao padrão em vez
+    de insistir num caminho morto.
+    """
+    padrao = os.path.join(pasta_dados_usuario(), "cvm_cache")
+    for caminho in (ler_preferencia(PREF_PASTA_CACHE, None), padrao):
+        if not caminho:
+            continue
+        try:
+            os.makedirs(caminho, exist_ok=True)
+            return caminho
+        except OSError:
+            continue
+    return padrao     # nem o padrão pôde ser criado; o download avisará o erro
 
 
 def promote_reference_column(df, ativo_referencia):
@@ -1347,7 +1373,7 @@ class CVMImportDialog(_PriceImportDialog):
         box = QGroupBox("📁 Pasta de cache dos arquivos da CVM")
         bl = QVBoxLayout(box)
         linha = QHBoxLayout()
-        padrao = os.path.join(pasta_dados_usuario(), "cvm_cache")
+        padrao = pasta_cache_cvm_inicial()
         self.cache_entry = QLineEdit(padrao)
         linha.addWidget(self.cache_entry, 1)
         b = QPushButton("Procurar...")
@@ -1400,6 +1426,9 @@ class CVMImportDialog(_PriceImportDialog):
             self, "Pasta de cache da CVM", self.cache_entry.text())
         if pasta:
             self.cache_entry.setText(pasta)
+            # Guarda a escolha: sem isto o campo voltava ao padrão na abertura
+            # seguinte, e quem apontava para outro lugar perdia o ajuste.
+            gravar_preferencia(PREF_PASTA_CACHE, pasta)
             self._carregar_cnpjs_da_pasta(pasta)
 
     def _carregar_cnpjs_da_pasta(self, pasta):
@@ -1421,12 +1450,16 @@ class CVMImportDialog(_PriceImportDialog):
         if len(cnpjs) < 2:
             raise ValueError("Informe pelo menos 2 CNPJs de fundos válidos.")
 
+        pasta = self.cache_entry.text().strip()
         wide, faltantes = cvmsrc.buscar_cotas_fundos(
-            cnpjs, d_ini, d_fim, self.cache_entry.text().strip(), progress=progress)
+            cnpjs, d_ini, d_fim, pasta, progress=progress)
+        # Guarda a pasta que deu certo. O "Procurar..." já grava a escolha, mas
+        # quem digita o caminho à mão não passa por lá.
+        gravar_preferencia(PREF_PASTA_CACHE, pasta)
         # Registra a pasta usada: ela e limpa ao fechar o programa
         janela = self.parent()
         if janela is not None:
-            getattr(janela, 'cvm_caches_usados', set()).add(self.cache_entry.text().strip())
+            getattr(janela, 'cvm_caches_usados', set()).add(pasta)
         # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
         wide, relatorio = limpar_series_precos(wide, k=k)
         return wide, faltantes, relatorio

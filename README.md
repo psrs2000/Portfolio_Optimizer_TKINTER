@@ -228,7 +228,9 @@ A limpeza, quando acontece, é **seletiva**: só saem os arquivos com cara de do
 | Script (`python desktop_app_qt.py`) | `<pasta do projeto>\cvm_cache` |
 | Executável (`.exe`) | `%APPDATA%\OtimizadorPortfolio\cvm_cache` |
 
-A pasta é exibida (e pode ser trocada) na própria janela de importação.
+A pasta é exibida (e pode ser trocada) na própria janela de importação. **A que você escolher é lembrada** e volta nas próximas aberturas — é só apontar uma vez. Se a pasta lembrada desaparecer (pendrive removido, pasta apagada) e não puder ser recriada, o programa volta ao padrão em vez de insistir num caminho morto.
+
+💡 **A pasta é criada assim que a janela de importação abre**, mesmo antes da primeira busca. É isso que permite chegar nela pelo **Procurar...** e deixar ali o seu `CNPJ.csv`. No executável isso importa mais ainda, porque `%APPDATA%\OtimizadorPortfolio` não existe numa instalação nova.
 
 💡 Seja qual for a escolha, a base já importada pode ser salva a qualquer momento com **💾 Baixar Base de Dados Carregada** (seção 3.2.2) — um arquivo pequeno, que recarrega pelo botão de planilha e dispensa voltar à CVM.
 
