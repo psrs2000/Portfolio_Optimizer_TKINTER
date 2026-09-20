@@ -3777,6 +3777,34 @@ class PortfolioOptimizerGUI(QMainWindow):
                 messagebox.showerror("Erro", f"Peso mínimo > máximo para {asset}")
                 return None
 
+        # O que está definido na aba Avançado é IMPERATIVO. Se algum ativo com
+        # regra não está entre os selecionados, a regra não vai ser aplicada —
+        # e o otimizador entregaria uma carteira diferente da pedida, sem nada
+        # na tela denunciando isso. Melhor recusar e explicar.
+        selecionados = set(self.get_selected_assets())
+        ausentes = [a for a in self.individual_constraints if a not in selecionados]
+        if ausentes:
+            lista = ', '.join(ausentes[:12]) + ('...' if len(ausentes) > 12 else '')
+            texto = (f"❌ {len(ausentes)} ativo(s) têm regra na aba Avançado mas "
+                     f"NÃO estão selecionados na aba Dados:\n\n{lista}\n\n")
+            if self.use_ranking.get() and self.auto_rerank.get():
+                # O recálculo automático acabou de refazer a seleção: é de longe
+                # a causa mais provável, e a saída depende de qual das duas
+                # coisas o usuário realmente quer.
+                texto += ("Causa mais provável: o recálculo automático do ranking "
+                          "(aba Ranking) refez a seleção e descartou esses ativos.\n\n"
+                          "Como resolver, conforme o que você quer:\n"
+                          "• Manter a carteira/regras do Avançado → desmarque "
+                          "\"Recalcular o ranking...\" na aba Ranking.\n"
+                          "• Deixar o ranking escolher os ativos → limpe as "
+                          "restrições individuais na aba Avançado.")
+            else:
+                texto += ("Como resolver:\n"
+                          "• Selecione esses ativos na aba Dados, ou\n"
+                          "• Remova as regras deles na aba Avançado.")
+            messagebox.showerror("Regras da aba Avançado não podem ser aplicadas", texto)
+            return None
+
         return self.individual_constraints.copy()
 
     def get_short_configuration(self):
