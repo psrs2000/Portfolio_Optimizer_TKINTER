@@ -15,13 +15,14 @@ o mesmo usado pela versão Tkinter.
 
 import os
 import sys
+import json
 
 # Garantir que o backend Qt do matplotlib use PyQt5
 os.environ.setdefault("QT_API", "pyqt5")
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 import matplotlib
 matplotlib.use("QtAgg")
@@ -37,10 +38,48 @@ from PyQt5.QtWidgets import (
     QGridLayout, QLabel, QPushButton, QCheckBox, QRadioButton, QButtonGroup,
     QLineEdit, QSlider, QGroupBox, QScrollArea, QListWidget, QAbstractItemView,
     QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QProgressBar,
-    QMessageBox, QFileDialog, QDateEdit, QFrame, QSizePolicy
+    QMessageBox, QFileDialog, QDateEdit, QFrame, QSizePolicy, QComboBox,
+    QPlainTextEdit, QDialogButtonBox, QSpinBox
 )
 
 from optimizer import PortfolioOptimizer
+
+# yfinance é OPCIONAL: sem ele o aplicativo funciona normalmente, apenas a
+# importação pelo Yahoo Finance fica indisponível (com aviso ao usuário).
+try:
+    import yfinance as yf
+    YFINANCE_OK = True
+except Exception:
+    yf = None
+    YFINANCE_OK = False
+
+# Fontes nacionais — também OPCIONAIS (cada uma tem suas dependências):
+#  - B3 (COTAHIST): baixa os arquivos anuais da B3; requer 'requests'.
+#  - Excel/STOCKHISTORY: fonte complementar p/ renda fixa; requer Windows +
+#    Excel 365 + 'xlwings'. O módulo importa, mas a busca só roda no Windows.
+# Guardamos o MOTIVO real da falha de importação (arquivo ausente, dependência
+# faltando, etc.) para exibir ao usuário em vez de um palpite genérico.
+try:
+    import b3_series_wide_com_limpeza as b3src
+    B3_OK, B3_IMPORT_ERROR = True, None
+except Exception as _e:
+    b3src, B3_OK = None, False
+    B3_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+
+try:
+    import b3_excel_rendafixa as rfsrc
+    EXCELRF_OK, EXCELRF_IMPORT_ERROR = True, None
+except Exception as _e:
+    rfsrc, EXCELRF_OK = None, False
+    EXCELRF_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+
+# CVM (fundos de investimento): baixa os dados abertos da CVM; requer 'requests'.
+try:
+    import cvm_fundos as cvmsrc
+    CVM_OK, CVM_IMPORT_ERROR = True, None
+except Exception as _e:
+    cvmsrc, CVM_OK = None, False
+    CVM_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
 # Sentinela equivalente ao tk.END, usado pelo adaptador de listbox
 END = "end"
@@ -55,6 +94,21 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
     Calcula ranking de ativos - VERSÃO CORRIGIDA
     ATUALIZADO: Correlação agora é entre integrais (ativo vs referência)
     COM: Normalização final (0 a 1)
+
+    risk_free_column:
+        '<nome>' -> essa coluna é a referência;
+        None     -> NÃO há referência: usa-se a linha do zero no lugar dela.
+
+    Sem referência, a diferença "ativo − referência" vira o próprio retorno do
+    ativo, e o ranking passa a medir a qualidade da evolução dele por si só.
+    A CORRELAÇÃO, porém, deixa de existir (correlacionar com uma série
+    constante não define nada), então esse componente é retirado da conta e o
+    peso é redistribuído entre inclinação e desvio.
+
+    Antes, sem referência, a função tomava a PRIMEIRA COLUNA como referência de
+    qualquer jeito: aquele ativo sumia do ranking sem aviso e, como a
+    auto-otimização escolhe os ativos pelo ranking, ele nunca podia entrar na
+    carteira.
     """
     try:
         from scipy import stats
@@ -79,18 +133,26 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
             if risk_free_column and risk_free_column in df_work.columns:
                 ref_col = risk_free_column
                 asset_columns = [col for col in df_work.columns if col not in ['Data', risk_free_column]]
-            elif len(df_work.columns) > 2:
-                # Assumir segunda coluna como referência se contém palavras-chave
-                second_col = df_work.columns[1]
-                if any(term in second_col.lower() for term in ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']):
-                    ref_col = second_col
-                    asset_columns = [col for col in df_work.columns if col not in ['Data', second_col]]
-                else:
-                    ref_col = df_work.columns[1]
-                    asset_columns = df_work.columns[2:].tolist()
+                ref_serie = df_work[ref_col]
             else:
+                # Sem referência: a linha do zero faz esse papel. Todos os
+                # ativos entram no ranking, nenhum é consumido como benchmark.
+                ref_col = None
+                asset_columns = [col for col in df_work.columns if col != 'Data']
+                ref_serie = pd.Series(0.0, index=df_work.index)
+
+            if not asset_columns:
                 return None
         else:
+            return None
+
+        # Peso útil zero: nada distinguiria os ativos (todos sairiam com o
+        # mesmo índice). A interface barra isso antes, com explicação; aqui é a
+        # rede de segurança para chamadas por outro caminho.
+        peso_util = peso_inc + peso_desv + (peso_cor if ref_col is not None else 0.0)
+        if peso_util <= 0:
+            print("❌ Ranking: os pesos informados não distinguem os ativos "
+                  "(peso útil zero).")
             return None
 
         # ===============================
@@ -100,7 +162,7 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
         diferenca_data['Data'] = dates_col
 
         for asset in asset_columns:
-            diferenca_data[f"{asset}_diff"] = df_work[asset] - df_work[ref_col]
+            diferenca_data[f"{asset}_diff"] = df_work[asset] - ref_serie
 
         df_diferenca = pd.DataFrame(diferenca_data)
 
@@ -151,22 +213,28 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
                 slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, y_data)
                 r_squared = r_value ** 2
 
-                # NOVA CORRELAÇÃO: Entre integrais (evoluções acumuladas)
-                asset_integral = df_work[asset].cumsum().values
-                ref_integral = df_work[ref_col].cumsum().values
-                correlation = np.corrcoef(asset_integral, ref_integral)[0, 1]
+                # NOVA CORRELAÇÃO: Entre integrais (evoluções acumuladas).
+                # Sem referência não há com o que correlacionar — a série seria
+                # constante e o resultado, indefinido. O componente sai da conta
+                # e seu peso é redistribuído entre inclinação e desvio.
+                if ref_col is None:
+                    correlation = np.nan
+                else:
+                    asset_integral = df_work[asset].cumsum().values
+                    ref_integral = ref_serie.cumsum().values
+                    correlation = np.corrcoef(asset_integral, ref_integral)[0, 1]
 
                 std_dev = df_diferenca[f"{asset}_diff"].std()
 
                 slope_norm = slope / max_slope if max_slope > 0 else 0
                 std_dev_norm = std_dev / max_deviation if max_deviation > 0 else 0
 
-                correlation_norm = correlation
-
                 numerador = (peso_inc * slope_norm +
-                             peso_desv * (1 - std_dev_norm) +
-                             peso_cor * correlation_norm)
-                denominador = peso_inc + peso_desv + peso_cor
+                             peso_desv * (1 - std_dev_norm))
+                denominador = peso_inc + peso_desv
+                if ref_col is not None:
+                    numerador += peso_cor * correlation
+                    denominador += peso_cor
 
                 indice_bruto = numerador / denominador if denominador > 0 else 0
 
@@ -220,7 +288,7 @@ def calculate_asset_ranking(df_base_zero, risk_free_column=None, peso_inc=0.33, 
 
         return {
             'ranking': df_ranking,
-            'referencia': ref_col,
+            'referencia': ref_col,     # None = ranking medido contra a linha do zero
             'total_ativos': len(asset_columns)
         }
 
@@ -565,6 +633,281 @@ class _AutoSignals(QObject):
     finished = pyqtSignal()
 
 
+# =============================================================================
+# IMPORTAÇÃO DE DADOS PELO YAHOO FINANCE
+# =============================================================================
+
+# Tipos de ativo e o sufixo aplicado ao código digitado.
+# "LIVRE" é um marcador: nesse modo o código vai exatamente como digitado.
+YAHOO_ASSET_TYPES = (
+    ("Ações Brasileiras (.SA)", ".SA"),
+    ("Ações Americanas", ""),
+    ("ETFs Americanos", ""),
+    ("Criptomoedas", ""),
+    ("Códigos Livres do Yahoo", "LIVRE"),
+)
+
+
+def yahoo_symbol(simbolo, sufixo):
+    """Monta o código final enviado ao Yahoo a partir do que foi digitado."""
+    simbolo = simbolo.strip()
+    if sufixo in ("", None, "LIVRE"):
+        return simbolo          # modo livre / mercados sem sufixo
+    if "." in simbolo:
+        return simbolo          # já veio com sufixo: respeita o que o usuário digitou
+    return simbolo + sufixo
+
+
+def fetch_yahoo_prices(simbolos, data_inicio, data_fim, sufixo=".SA", progress=None):
+    """
+    Baixa o histórico diário de cada símbolo no Yahoo Finance.
+
+    progress: callable(indice, total, simbolo) chamado antes de cada busca,
+    para a interface poder atualizar a barra de progresso.
+
+    Retorna (dados_por_simbolo, erros) — as chaves usam o código ORIGINAL
+    digitado, para o restante do fluxo não depender do sufixo.
+    """
+    if not YFINANCE_OK:
+        raise RuntimeError(
+            "A biblioteca 'yfinance' não está instalada.\n\n"
+            "Instale com:  pip install yfinance"
+        )
+
+    dados, erros = {}, []
+    inicio = data_inicio.strftime('%Y-%m-%d')
+    fim = data_fim.strftime('%Y-%m-%d')
+    total = len(simbolos)
+
+    for i, simbolo in enumerate(simbolos):
+        if progress is not None:
+            progress(i, total, simbolo)
+        try:
+            hist = yf.Ticker(yahoo_symbol(simbolo, sufixo)).history(
+                start=inicio, end=fim, interval="1d")
+            # Exige um mínimo de pontos: séries muito curtas quebram a base zero
+            if hist is not None and not hist.empty and len(hist) > 5:
+                dados[simbolo] = hist
+            else:
+                erros.append(simbolo)
+        except Exception:
+            erros.append(simbolo)
+
+    if progress is not None:
+        progress(total, total, "")
+    return dados, erros
+
+
+# Tipo de preço escolhido pelo usuário -> coluna correspondente no yfinance.
+# Os mesmos quatro tipos oferecidos pelas fontes B3 e Excel.
+YAHOO_PRICE_COLS = {
+    "Abertura": "Open",
+    "Máximo": "High",
+    "Mínimo": "Low",
+    "Fechamento": "Close",
+}
+
+
+def consolidate_yahoo_prices(dados_historicos, tipo_preco="Fechamento"):
+    """Junta o preço escolhido de cada ativo num único DataFrame por data."""
+    if not dados_historicos:
+        return None
+
+    coluna = YAHOO_PRICE_COLS.get(tipo_preco, "Close")
+    series = []
+    for simbolo, hist in dados_historicos.items():
+        if coluna in hist.columns and not hist[coluna].empty:
+            df_temp = pd.DataFrame({simbolo: hist[coluna]})
+            # Yahoo devolve índice com fuso; remover evita conflito ao mesclar
+            if getattr(df_temp.index, 'tz', None) is not None:
+                df_temp.index = df_temp.index.tz_localize(None)
+            series.append(df_temp)
+
+    if not series:
+        return None
+
+    consolidado = pd.concat(series, axis=1, sort=True)
+    consolidado.index.name = "Data"
+    return consolidado
+
+
+def _maior_sequencia_true(valores):
+    """Maior quantidade de True consecutivos numa sequência booleana."""
+    maior = atual = 0
+    for v in valores:
+        atual = atual + 1 if v else 0
+        if atual > maior:
+            maior = atual
+    return maior
+
+
+def limpar_series_precos(wide, k=10):
+    """
+    Limpeza CANÔNICA das séries de preços — usada por TODAS as fontes online
+    (Yahoo, B3 e Excel), para que se comportem exatamente igual.
+
+    Entrada: DataFrame Data × Ativos, ordenado por Data.
+    Saída:   (wide_limpo, relatorio)
+
+    Passo 0 - valor 0 é tratado como "sem dado" (vira vazio).
+    Regra 1 - coluna sem dado na 1ª data (primeira linha) é excluída.
+    Regra 2 - coluna com MAIS de k vazios consecutivos é excluída.
+    Regra 3 - vazios restantes recebem o valor do dia anterior (forward fill).
+
+    A ORDEM importa: as regras 1 e 2 olham os vazios ANTES do preenchimento;
+    a 3 vem por último. Se o preenchimento viesse antes, não haveria mais
+    buracos para as regras 1 e 2 avaliarem.
+
+    Sem isso, lacunas sobrevivem como NaN e o otimizador (que faz dropna nas
+    linhas) descartaria a data inteira para TODOS os ativos por causa de um só.
+    """
+    df = wide.copy()
+    tickers = [c for c in df.columns if c != "Data"]
+    if not tickers or len(df) == 0:
+        return df, {"regra1": [], "regra2": [], "mantidos": tickers, "k": k}
+
+    # Passo 0: garante numérico e trata 0 como ausente
+    precos = df[tickers].apply(pd.to_numeric, errors="coerce")
+    precos = precos.mask(precos == 0)
+    ausente = precos.isna()
+
+    # Regra 1: sem dado na primeira linha
+    primeira = ausente.iloc[0]
+    rem1 = [t for t in tickers if bool(primeira[t])]
+
+    # Regra 2: mais de k vazios consecutivos (avaliada só nas que passaram na 1)
+    rem2 = [t for t in tickers
+            if t not in rem1 and _maior_sequencia_true(ausente[t].tolist()) > k]
+
+    remover = set(rem1) | set(rem2)
+    manter = [t for t in tickers if t not in remover]
+
+    # Regra 3: preenche o que sobrou com o valor do dia anterior
+    limpo = pd.concat([df[["Data"]], precos[manter]], axis=1)
+    if manter:
+        limpo[manter] = limpo[manter].ffill()
+
+    return limpo, {"regra1": rem1, "regra2": rem2, "mantidos": manter, "k": k}
+
+
+def pasta_dados_usuario(nome_app="OtimizadorPortfolio"):
+    """
+    Pasta para dados que precisam PERSISTIR entre execuções — hoje, o cache
+    dos arquivos da CVM.
+
+    Não dá para usar a pasta do próprio programa: quando ele é empacotado como
+    executável ÚNICO, o PyInstaller extrai tudo para uma pasta temporária e a
+    APAGA ao fechar. Guardar o cache lá faria todos os arquivos da CVM (que são
+    grandes) serem baixados de novo a cada abertura.
+
+    Por isso, quando empacotado, usamos a pasta de dados do usuário (%APPDATA%
+    no Windows), que além de sempre existir sobrevive à troca do executável por
+    uma versão nova. Rodando como script, fica ao lado do .py, que é prático no
+    desenvolvimento.
+    """
+    if getattr(sys, 'frozen', False):          # rodando como executável
+        base = os.environ.get('APPDATA') or os.path.expanduser('~')
+        return os.path.join(base, nome_app)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+# Preferências do usuário que sobrevivem ao fechamento do programa.
+ARQUIVO_PREFERENCIAS = "preferencias.json"
+PREF_LIMPAR_CACHE = "limpar_cache_cvm_ao_sair"
+PREF_PASTA_CACHE = "pasta_cache_cvm"
+
+
+def _caminho_preferencias():
+    return os.path.join(pasta_dados_usuario(), ARQUIVO_PREFERENCIAS)
+
+
+def ler_preferencia(chave, padrao=None):
+    """Lê uma preferência. Qualquer problema (arquivo ausente, ilegível,
+    corrompido) devolve o padrão — preferência nenhuma justifica travar o
+    programa."""
+    try:
+        with open(_caminho_preferencias(), encoding='utf-8') as f:
+            return json.load(f).get(chave, padrao)
+    except Exception:
+        return padrao
+
+
+def gravar_preferencia(chave, valor):
+    """Grava uma preferência preservando as demais. Falha em silêncio: se a
+    pasta não for gravável, o programa segue com o valor padrão."""
+    caminho = _caminho_preferencias()
+    dados = {}
+    try:
+        with open(caminho, encoding='utf-8') as f:
+            dados = json.load(f)
+    except Exception:
+        pass
+    dados[chave] = valor
+    try:
+        os.makedirs(os.path.dirname(caminho), exist_ok=True)
+        with open(caminho, 'w', encoding='utf-8') as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def pasta_cache_cvm_inicial():
+    """
+    Pasta de cache com que a janela da CVM abre — e que passa a EXISTIR aqui.
+
+    Dois motivos para criá-la neste ponto, e não só na hora do download:
+    empacotado como executável o padrão fica em %APPDATA%, onde nada existe
+    ainda na primeira execução; e enquanto a pasta não existe o botão
+    "Procurar..." não consegue chegar nela, de modo que não há onde deixar o
+    CNPJ.csv antes da primeira busca.
+
+    Prefere a última pasta escolhida pelo usuário. Se ela sumiu — pendrive
+    removido, pasta apagada — e não puder ser recriada, volta ao padrão em vez
+    de insistir num caminho morto.
+    """
+    padrao = os.path.join(pasta_dados_usuario(), "cvm_cache")
+    for caminho in (ler_preferencia(PREF_PASTA_CACHE, None), padrao):
+        if not caminho:
+            continue
+        try:
+            os.makedirs(caminho, exist_ok=True)
+            return caminho
+        except OSError:
+            continue
+    return padrao     # nem o padrão pôde ser criado; o download avisará o erro
+
+
+def promote_reference_column(df, ativo_referencia):
+    """
+    Renomeia a coluna do ativo de referência para 'Taxa_Ref_<CÓDIGO>' e a move
+    para a segunda posição (logo após 'Data'). É esse prefixo + posição que faz
+    a detecção automática reconhecer a taxa de referência e habilitar os
+    objetivos de excesso. Retorna (df, nome_da_coluna) — nome None se o ativo
+    não estiver presente. Usada por todas as fontes online (Yahoo, B3, Excel).
+    """
+    if not ativo_referencia:
+        return df, None
+    ref = ativo_referencia.strip().upper()
+    if ref not in df.columns:
+        return df, None
+    nome_ref = f"Taxa_Ref_{ref}"
+    df = df.rename(columns={ref: nome_ref})
+    outras = [c for c in df.columns if c not in ('Data', nome_ref)]
+    return df[['Data', nome_ref] + outras], nome_ref
+
+
+def build_yahoo_dataframe(dados_historicos, ativo_referencia=None, tipo_preco="Fechamento"):
+    """
+    Monta o DataFrame no layout que o aplicativo espera:
+    Data | Taxa_Ref_<ATIVO> (opcional) | demais ativos...
+    """
+    consolidado = consolidate_yahoo_prices(dados_historicos, tipo_preco)
+    if consolidado is None:
+        return None, None
+    df = consolidado.reset_index()
+    return promote_reference_column(df, ativo_referencia)
+
+
 class _SortableItem(QTableWidgetItem):
     """Item de tabela que ordena numericamente quando há uma chave numérica
     armazenada em Qt.UserRole; caso contrário, ordena como texto."""
@@ -577,6 +920,549 @@ class _SortableItem(QTableWidgetItem):
             except (TypeError, ValueError):
                 pass
         return self.text() < other.text()
+
+
+# Sentinela para "detectar a referência automaticamente" em _apply_raw_data.
+# Precisa ser distinto de None, que ali significa "forçar SEM referência".
+_AUTO_REF = object()
+
+
+def _escolher_referencia(parent, candidatos, atual=None):
+    """
+    Pergunta qual dos ativos deve servir de referência (benchmark).
+
+    Usado em dois momentos: logo após a busca, nas fontes em que os nomes só são
+    conhecidos depois dela (fundos da CVM, cujos nomes vêm do cadastro), e pela
+    troca de referência sobre uma base já carregada.
+
+    `atual` é a referência vigente, que aparece destacada e já selecionada.
+    Devolve o nome escolhido, ou None se o usuário optar por ficar sem
+    referência (botão "Seguir sem referência").
+    """
+    if not candidatos:
+        return None
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("🏛️ Escolher Ativo de Referência")
+    dlg.setMinimumSize(660, 440)
+    lay = QVBoxLayout(dlg)
+
+    texto = ("Escolha qual ativo servirá de <b>referência</b> (benchmark).<br>"
+             "Ele sai da carteira e passa a ser a taxa de referência, habilitando os "
+             "objetivos de excesso.<br>Um fundo referenciado DI costuma ser a melhor escolha.")
+    if atual:
+        texto += f"<br><br>Referência atual: <b>{atual}</b>"
+    lay.addWidget(QLabel(texto))
+
+    lista = QListWidget()
+    lista.addItems(candidatos)
+    if atual and atual in candidatos:
+        lista.setCurrentRow(candidatos.index(atual))
+    else:
+        lista.setCurrentRow(0)
+    lay.addWidget(lista, 1)
+
+    escolha = {'valor': None}
+
+    btns = QHBoxLayout()
+    b_ok = QPushButton("✅ Usar como referência")
+    b_ok.setStyleSheet(
+        "QPushButton { background-color: #0078d4; color: white; font-weight: bold; padding: 8px; }")
+
+    def _ok():
+        item = lista.currentItem()
+        escolha['valor'] = item.text() if item else None
+        dlg.accept()
+
+    b_ok.clicked.connect(_ok)
+    btns.addWidget(b_ok)
+    b_sem = QPushButton("Seguir sem referência")
+    b_sem.clicked.connect(dlg.reject)
+    btns.addWidget(b_sem)
+    lay.addLayout(btns)
+
+    lista.itemDoubleClicked.connect(lambda _i: _ok())
+
+    dlg.exec_()
+    return escolha['valor']
+
+
+class _PriceImportDialog(QDialog):
+    """
+    Base dos diálogos de importação por PREÇO (B3 e Excel/renda fixa), que
+    compartilham quase toda a interface: símbolos, tipo de preço, limpeza (k),
+    ativo de referência, período e barra de progresso.
+
+    A subclasse só precisa implementar _run_fetch(...), devolvendo
+    (wide_df, faltantes, relatorio) — o resto do fluxo (validação, promoção da
+    referência, empacotamento do resultado) fica aqui.
+    """
+    progress_label = "Buscando"
+
+    def __init__(self, parent=None, titulo="Importar", banner=None,
+                 mostrar_preco=True, ref_por_lista=False):
+        super().__init__(parent)
+        self.setWindowTitle(titulo)
+        self.setMinimumSize(600, 680)
+
+        self.result_df = None
+        self.nome_ref = None
+        self.erros = []
+        self.relatorio = None
+        self.origem_desc = titulo
+        self.mostrar_preco = mostrar_preco
+        self.ref_por_lista = ref_por_lista   # referência escolhida APÓS a busca
+
+        layout = QVBoxLayout(self)
+
+        if banner:
+            lbl_banner = QLabel(banner)
+            lbl_banner.setWordWrap(True)
+            lbl_banner.setStyleSheet(
+                "background:#fff3cd; color:#664d03; padding:8px; border-radius:4px;")
+            layout.addWidget(lbl_banner)
+
+        # ----- Símbolos -----
+        sym_box = QGroupBox(self.symbols_title())
+        sym_l = QVBoxLayout(sym_box)
+        self.symbols_edit = QPlainTextEdit()
+        self.symbols_edit.setPlainText(self.default_symbols())
+        self.symbols_edit.setFixedHeight(110)
+        sym_l.addWidget(self.symbols_edit)
+        layout.addWidget(sym_box)
+
+        # ----- Tipo de preço + limpeza -----
+        opts = QHBoxLayout()
+        self.preco_combo = None
+        if mostrar_preco:
+            opts.addWidget(QLabel("💰 Preço:"))
+            self.preco_combo = QComboBox()
+            for nome in ("Abertura", "Máximo", "Mínimo", "Fechamento"):
+                self.preco_combo.addItem(nome)
+            self.preco_combo.setCurrentText("Fechamento")
+            opts.addWidget(self.preco_combo)
+            opts.addSpacing(20)
+        opts.addWidget(QLabel("🧹 Elimina após N dias sem dado:"))
+        self.k_spin = QSpinBox()
+        self.k_spin.setRange(1, 999)
+        self.k_spin.setValue(10)
+        self.k_spin.setToolTip(
+            "Se um ativo ficar mais de N pregões seguidos sem cotação no período, "
+            "ele é descartado. Lacunas menores são preenchidas com o dia anterior.")
+        opts.addWidget(self.k_spin)
+        opts.addStretch()
+        layout.addLayout(opts)
+
+        # Ponto de extensão: campos próprios de cada fonte (ex.: o tipo de
+        # ativo/sufixo do Yahoo). Por padrão não acrescenta nada.
+        self._extra_widgets(layout)
+
+        # ----- Ativo de referência -----
+        ref_box = QGroupBox("🏛️ Ativo de Referência (benchmark / taxa livre)")
+        ref_l = QVBoxLayout(ref_box)
+        ref_row = QHBoxLayout()
+        chk_ref = QCheckBox("Incluir")
+        chk_ref.setChecked(True)
+        self.use_ref = BoolVar(chk_ref)
+        ref_row.addWidget(chk_ref)
+        self.ref_entry = None
+        if not ref_por_lista:
+            self.ref_entry = QLineEdit(self.default_reference())
+            self.ref_entry.setFixedWidth(140)
+            ref_row.addWidget(self.ref_entry)
+        ref_row.addStretch()
+        ref_l.addLayout(ref_row)
+        if ref_por_lista:
+            texto_ref = ("Ao final da busca você escolherá, na lista dos que foram "
+                         "obtidos, qual serve de referência. Ele vira a coluna "
+                         "Taxa_Ref_<nome> e habilita os objetivos de excesso.")
+        else:
+            texto_ref = ("O ativo escolhido é buscado junto, vira a coluna de referência "
+                         "(Taxa_Ref_<código>) e habilita os objetivos de excesso.")
+        hint = QLabel(texto_ref)
+        hint.setStyleSheet("color: gray;")
+        hint.setWordWrap(True)
+        ref_l.addWidget(hint)
+        layout.addWidget(ref_box)
+
+        # ----- Período -----
+        per_box = QGroupBox("📅 Período")
+        per_l = QHBoxLayout(per_box)
+        per_l.addWidget(QLabel("Início:"))
+        self.date_ini = DateEntry()
+        self.date_ini.set_date(date.today() - timedelta(days=365 * 3))
+        self.date_ini.setMaximumDate(QDate.currentDate())
+        per_l.addWidget(self.date_ini)
+        per_l.addSpacing(20)
+        per_l.addWidget(QLabel("Fim:"))
+        self.date_fim = DateEntry()
+        self.date_fim.set_date(date.today())
+        self.date_fim.setMaximumDate(QDate.currentDate())
+        per_l.addWidget(self.date_fim)
+        per_l.addStretch()
+        layout.addWidget(per_box)
+
+        # ----- Progresso -----
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        # ----- Botões -----
+        btns = QHBoxLayout()
+        self.btn_fetch = QPushButton("🚀 Buscar e Importar")
+        self.btn_fetch.setStyleSheet(
+            "QPushButton { background-color: #0078d4; color: white; font-weight: bold; padding: 8px; }")
+        self.btn_fetch.clicked.connect(self._fetch)
+        btns.addWidget(self.btn_fetch)
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.clicked.connect(self.reject)
+        btns.addWidget(btn_cancel)
+        layout.addLayout(btns)
+
+    # ---- pontos de personalização das subclasses ----
+    def _extra_widgets(self, layout):
+        """Campos adicionais específicos da fonte. Padrão: nenhum."""
+        pass
+
+    def default_symbols(self):
+        return "PETR4\nVALE3\nITUB4\nBBDC4\nABEV3"
+
+    def symbols_title(self):
+        return "📝 Símbolos dos Ativos (um por linha)"
+
+    def default_reference(self):
+        return "BOVA11"
+
+    def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
+        """Deve devolver (wide_df, faltantes, relatorio). Implementada na subclasse."""
+        raise NotImplementedError
+
+    # ---- fluxo comum ----
+    def _fetch(self):
+        simbolos = [s.strip().upper() for s in self.symbols_edit.toPlainText().split('\n') if s.strip()]
+        if len(simbolos) < 2:
+            messagebox.showerror("Erro", "Digite pelo menos 2 símbolos.")
+            return
+
+        d_ini = datetime.combine(self.date_ini.get_date(), datetime.min.time())
+        d_fim = datetime.combine(self.date_fim.get_date(), datetime.min.time())
+        if d_ini >= d_fim:
+            messagebox.showerror("Erro", "A data de início deve ser anterior à data de fim.")
+            return
+
+        # Referência: por campo de texto (buscada junto) ou escolhida da lista
+        # depois da busca (ver adiante). No 2º caso nada é acrescentado à busca.
+        ativo_ref = None
+        if self.use_ref.get() and self.ref_entry is not None:
+            ativo_ref = self.ref_entry.text().strip().upper()
+        busca = list(simbolos)
+        if ativo_ref and ativo_ref not in busca:
+            busca.append(ativo_ref)
+
+        tipo_preco = self.preco_combo.currentText() if self.preco_combo is not None else "Fechamento"
+        k = self.k_spin.value()
+
+        self.btn_fetch.setEnabled(False)
+        self.progress.setVisible(True)
+        self.progress.setMaximum(0)  # indeterminado até o 1º progresso
+
+        def _progress(i, total, item):
+            self.progress.setMaximum(max(int(total), 1))
+            self.progress.setValue(int(i))
+            if item is not None:
+                self.status.setText(f"{self.progress_label}: {item} ({min(i + 1, total)}/{total})")
+            else:
+                self.status.setText("Processando...")
+            QApplication.processEvents()
+
+        try:
+            wide, faltantes, relatorio = self._run_fetch(busca, d_ini, d_fim, tipo_preco, k, _progress)
+        except Exception as e:
+            self.progress.setVisible(False)
+            self.btn_fetch.setEnabled(True)
+            self.status.setText("")
+            messagebox.showerror("Erro", f"Falha na importação:\n{str(e)}")
+            return
+
+        self.progress.setVisible(False)
+        self.btn_fetch.setEnabled(True)
+        self.status.setText("")
+
+        if wide is None or wide.empty or (len(wide.columns) <= 1):
+            messagebox.showerror(
+                "Erro", "Nenhum dado utilizável foi obtido.\nVerifique os símbolos e o período.")
+            return
+
+        # Referência escolhida da LISTA do que efetivamente veio (CVM)
+        if self.ref_por_lista and self.use_ref.get():
+            candidatos = [c for c in wide.columns if c != 'Data']
+            escolhido = _escolher_referencia(self, candidatos)
+            ativo_ref = escolhido  # None = usuário optou por não usar referência
+
+        # Se a referência não sobreviveu (não veio, ou saiu na limpeza), avisa
+        if ativo_ref and ativo_ref not in wide.columns:
+            messagebox.showwarning(
+                "Referência indisponível",
+                f"'{ativo_ref}' não retornou dados suficientes.\n\n"
+                "A importação segue sem taxa de referência — os objetivos que "
+                "dependem dela ficarão indisponíveis.")
+            ativo_ref = None
+
+        wide, nome_ref = promote_reference_column(wide, ativo_ref)
+
+        n_ativos = len(wide.columns) - 1
+        self.result_df = wide
+        self.nome_ref = nome_ref
+        self.erros = list(faltantes or [])
+        self.relatorio = relatorio
+        self.origem_desc = f"{self.origem_desc} ({n_ativos} séries)"
+        self.accept()
+
+
+class YahooImportDialog(_PriceImportDialog):
+    """
+    Importa cotações do Yahoo Finance.
+
+    Usa a MESMA base das fontes B3/Excel, então herda de graça o tipo de preço,
+    a regra de limpeza (k), o ativo de referência e o relatório — o que antes
+    era diferente entre as fontes. O campo próprio daqui é o tipo de ativo,
+    que define o sufixo do código (.SA, sem sufixo ou livre).
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            titulo="🌐 Importar do Yahoo Finance",
+            banner=None)
+        self.progress_label = "Buscando"
+
+    def _extra_widgets(self, layout):
+        tipo_row = QHBoxLayout()
+        tipo_row.addWidget(QLabel("🏷️ Tipo de ativo:"))
+        self.tipo_combo = QComboBox()
+        for nome, _ in YAHOO_ASSET_TYPES:
+            self.tipo_combo.addItem(nome)
+        self.tipo_combo.currentIndexChanged.connect(self._update_tipo_hint)
+        tipo_row.addWidget(self.tipo_combo, 1)
+        layout.addLayout(tipo_row)
+
+        self.tipo_hint = QLabel("")
+        self.tipo_hint.setStyleSheet("color: gray;")
+        self.tipo_hint.setWordWrap(True)
+        layout.addWidget(self.tipo_hint)
+        self._update_tipo_hint()
+
+    def _sufixo(self):
+        return YAHOO_ASSET_TYPES[self.tipo_combo.currentIndex()][1]
+
+    def _update_tipo_hint(self):
+        sufixo = self._sufixo()
+        if sufixo == "LIVRE":
+            self.tipo_hint.setText(
+                "🔥 Modo códigos livres: digite exatamente como aparece no Yahoo "
+                "(ex.: PETR4.SA, MSFT, BTC-USD). Nenhum sufixo é acrescentado.")
+        elif sufixo:
+            self.tipo_hint.setText(
+                f"O sufixo '{sufixo}' é acrescentado automaticamente (ex.: PETR4 → PETR4{sufixo}). "
+                "Códigos que já contenham ponto são usados como digitados.")
+        else:
+            self.tipo_hint.setText(
+                "Os códigos são usados como digitados (ex.: MSFT, AAPL, BTC-USD).")
+
+    def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
+        dados, erros = fetch_yahoo_prices(simbolos, d_ini, d_fim,
+                                          sufixo=self._sufixo(), progress=progress)
+        if not dados:
+            return None, erros, None
+        consolidado = consolidate_yahoo_prices(dados, tipo_preco)
+        if consolidado is None:
+            return None, erros, None
+        wide = consolidado.reset_index()
+        wide, relatorio = limpar_series_precos(wide, k=k)
+        return wide, erros, relatorio
+
+
+class B3ImportDialog(_PriceImportDialog):
+    """Importa cotações da B3 (arquivos COTAHIST anuais)."""
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            titulo="🇧🇷 Importar da B3 (COTAHIST)",
+            banner="Baixa os arquivos COTAHIST anuais da B3. O primeiro download de "
+                   "cada ano é grande (dezenas de MB) e pode levar de alguns segundos "
+                   "a minutos — a janela pode parecer parada durante cada ano.")
+        self.progress_label = "Baixando COTAHIST"
+
+    def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
+        df = b3src.baixar_periodo(d_ini, d_fim, set(simbolos),
+                                  somente_vista=b3src.SOMENTE_VISTA, progress=progress)
+        wide, faltantes = b3src.montar_planilha(
+            df, simbolos, tipo_preco, d_ini, d_fim, somente_vista=b3src.SOMENTE_VISTA)
+        # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
+        wide, relatorio = limpar_series_precos(wide, k=k)
+        return wide, faltantes, relatorio
+
+
+class ExcelRFImportDialog(_PriceImportDialog):
+    """Importa cotações via Excel/STOCKHISTORY — complementar (renda fixa)."""
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            titulo="📊 Importar via Excel (renda fixa)",
+            banner="Fonte COMPLEMENTAR (LSEG/Refinitiv via STOCKHISTORY do Excel), para "
+                   "ETFs que o COTAHIST não cobre bem (FIXA11, IMAB11, B5P211...). "
+                   "Requer Windows com Excel 365 instalado e logado, e a biblioteca "
+                   "'xlwings'. Não misture esta fonte com a B3 na mesma carteira.")
+        self.progress_label = "Excel: buscando"
+
+    def default_symbols(self):
+        return "FIXA11\nIMAB11\nB5P211\nIRFM11"
+
+    def default_reference(self):
+        return "LFTS11"
+
+    def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
+        wide, faltantes = rfsrc.fetch_excel_wide(
+            simbolos, d_ini, d_fim, tipo_preco, visivel=False, progress=progress)
+        # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
+        wide, relatorio = limpar_series_precos(wide, k=k)
+        return wide, faltantes, relatorio
+
+
+class CVMImportDialog(_PriceImportDialog):
+    """
+    Importa cotas diárias de FUNDOS DE INVESTIMENTO dos dados abertos da CVM.
+
+    Diferenças em relação às outras fontes:
+    - os "símbolos" são CNPJs de fundos;
+    - não há tipo de preço (o informe diário traz apenas o valor da cota);
+    - o nome do fundo só é conhecido DEPOIS da busca (vem do cadastro), então a
+      referência é escolhida numa lista ao final.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            titulo="🏦 Importar Fundos (CVM)",
+            banner="Baixa os informes diários dos dados abertos da CVM. Os arquivos são "
+                   "grandes (trazem todos os fundos do país) — a primeira busca de cada "
+                   "mês baixa e guarda em cache; as seguintes reaproveitam o que já está lá.",
+            mostrar_preco=False,     # informe diário só tem VL_QUOTA
+            ref_por_lista=True)      # nomes dos fundos só se sabem após baixar
+        self.progress_label = "CVM"
+        # Mais alta que as outras fontes: tem a caixa da pasta de cache, a opção
+        # de apagar ao sair e a explicação que acompanha as duas.
+        self.setMinimumSize(660, 880)
+
+    def default_symbols(self):
+        return ""
+
+    def symbols_title(self):
+        return "📝 CNPJs dos Fundos (um por linha, com ou sem pontuação)"
+
+    def _extra_widgets(self, layout):
+        self.symbols_edit.setPlaceholderText(
+            "29.152.383/0001-03\n29152383000103\n\n"
+            "Cole os CNPJs aqui, ou escolha abaixo uma pasta que contenha CNPJ.csv.")
+
+        box = QGroupBox("📁 Pasta de cache dos arquivos da CVM")
+        bl = QVBoxLayout(box)
+        linha = QHBoxLayout()
+        padrao = pasta_cache_cvm_inicial()
+        self.cache_entry = QLineEdit(padrao)
+        linha.addWidget(self.cache_entry, 1)
+        b = QPushButton("Procurar...")
+        b.clicked.connect(self._escolher_pasta)
+        linha.addWidget(b)
+        bl.addLayout(linha)
+
+        # Apagar ou guardar o cache é gosto de cada um: quem repete sempre os
+        # mesmos fundos economiza um download enorme guardando; quem usa uma vez
+        # só não quer deixar centenas de MB na máquina. A escolha fica gravada e
+        # vale para as próximas vezes.
+        self.chk_limpar_cache = QCheckBox(
+            "Apagar os arquivos baixados ao fechar o programa")
+        self.chk_limpar_cache.setChecked(bool(ler_preferencia(PREF_LIMPAR_CACHE, True)))
+        self.chk_limpar_cache.toggled.connect(self._mudou_limpeza_cache)
+        bl.addWidget(self.chk_limpar_cache)
+
+        self.hint_cache = QLabel()
+        self.hint_cache.setStyleSheet("color: gray;")
+        self.hint_cache.setWordWrap(True)
+        bl.addWidget(self.hint_cache)
+        self._atualizar_dica_cache()
+
+        layout.addWidget(box)
+        self._carregar_cnpjs_da_pasta(padrao)
+
+    def _mudou_limpeza_cache(self, marcado):
+        """Guarda a escolha na hora, para valer nas próximas aberturas."""
+        gravar_preferencia(PREF_LIMPAR_CACHE, bool(marcado))
+        self._atualizar_dica_cache()
+
+    def _atualizar_dica_cache(self):
+        comum = ("\nPara guardar os dados já importados, use o botão "
+                 "\"Baixar Base de Dados Carregada\".\n"
+                 "Se existir um CNPJ.csv nesta pasta, os CNPJs são carregados dele.")
+        if self.chk_limpar_cache.isChecked():
+            texto = ("Os arquivos baixados ficam aqui durante o uso e são "
+                     "reaproveitados entre buscas da mesma sessão. Ao FECHAR o "
+                     "programa eles são apagados (apenas os baixados — seus "
+                     "próprios arquivos não são tocados).")
+        else:
+            texto = ("Os arquivos ficam guardados aqui, inclusive depois de "
+                     "fechar o programa: repetir uma busca fica bem mais "
+                     "rápido, mas a pasta cresce. Para liberar espaço, marque "
+                     "a caixa acima ou apague a pasta à mão.")
+        self.hint_cache.setText(texto + comum)
+
+    def _escolher_pasta(self):
+        pasta = QFileDialog.getExistingDirectory(
+            self, "Pasta de cache da CVM", self.cache_entry.text())
+        if pasta:
+            self.cache_entry.setText(pasta)
+            # Guarda a escolha: sem isto o campo voltava ao padrão na abertura
+            # seguinte, e quem apontava para outro lugar perdia o ajuste.
+            gravar_preferencia(PREF_PASTA_CACHE, pasta)
+            self._carregar_cnpjs_da_pasta(pasta)
+
+    def _carregar_cnpjs_da_pasta(self, pasta):
+        """Pré-preenche os CNPJs a partir de um CNPJ.csv, se houver na pasta."""
+        try:
+            caminho = os.path.join(pasta, "CNPJ.csv")
+            if CVM_OK and os.path.exists(caminho):
+                cnpjs = cvmsrc.ler_cnpjs_arquivo(caminho)
+                if cnpjs:
+                    self.symbols_edit.setPlainText("\n".join(cnpjs))
+                    self.status.setText(f"📄 {len(cnpjs)} CNPJs carregados de CNPJ.csv")
+        except Exception:
+            pass   # arquivo ausente ou ilegível: segue com o conteúdo digitado
+
+    def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
+        # Ignora linhas de comentário e mantém só o que tem dígitos de CNPJ
+        cnpjs = [s for s in simbolos
+                 if not s.strip().startswith('#') and len(cvmsrc.so_digitos(s)) >= 14]
+        if len(cnpjs) < 2:
+            raise ValueError("Informe pelo menos 2 CNPJs de fundos válidos.")
+
+        pasta = self.cache_entry.text().strip()
+        wide, faltantes = cvmsrc.buscar_cotas_fundos(
+            cnpjs, d_ini, d_fim, pasta, progress=progress)
+        # Guarda a pasta que deu certo. O "Procurar..." já grava a escolha, mas
+        # quem digita o caminho à mão não passa por lá.
+        gravar_preferencia(PREF_PASTA_CACHE, pasta)
+        # Registra a pasta usada: ela e limpa ao fechar o programa
+        janela = self.parent()
+        if janela is not None:
+            getattr(janela, 'cvm_caches_usados', set()).add(pasta)
+        # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
+        wide, relatorio = limpar_series_precos(wide, k=k)
+        return wide, faltantes, relatorio
 
 
 # =============================================================================
@@ -605,6 +1491,10 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.short_weights = {}
         self.short_widgets = {}
         self.auto_short_weights = {}   # shorts fixos da Auto-Otimização
+        # Pastas de cache da CVM usadas nesta sessão. Os arquivos baixados são
+        # apagados ao fechar o programa, para não deixar dezenas de MB na
+        # máquina do usuário final (ver closeEvent).
+        self.cvm_caches_usados = set()
 
         # Tabelas mensais
         self.monthly_table = None
@@ -718,6 +1608,44 @@ class PortfolioOptimizerGUI(QMainWindow):
         btn_load = QPushButton("📂 Carregar Planilha Excel")
         btn_load.clicked.connect(self.load_excel_file)
         load_l.addWidget(btn_load)
+
+        btn_yahoo = QPushButton("🌐 Importar do Yahoo Finance")
+        btn_yahoo.clicked.connect(self.open_yahoo_import)
+        if not YFINANCE_OK:
+            btn_yahoo.setToolTip("Requer a biblioteca 'yfinance' (pip install yfinance)")
+        load_l.addWidget(btn_yahoo)
+
+        btn_b3 = QPushButton("🇧🇷 Importar da B3 (COTAHIST)")
+        btn_b3.clicked.connect(self.open_b3_import)
+        if not B3_OK:
+            btn_b3.setToolTip("Requer a biblioteca 'requests' (pip install requests)")
+        load_l.addWidget(btn_b3)
+
+        btn_rf = QPushButton("📊 Importar via Excel (renda fixa)")
+        btn_rf.clicked.connect(self.open_excel_rf_import)
+        btn_rf.setToolTip("Fonte complementar: requer Windows + Excel 365 + xlwings")
+        load_l.addWidget(btn_rf)
+
+        btn_cvm = QPushButton("🏦 Importar Fundos (CVM)")
+        btn_cvm.clicked.connect(self.open_cvm_import)
+        btn_cvm.setToolTip("Cotas diárias de fundos de investimento, dos dados abertos da CVM")
+        load_l.addWidget(btn_cvm)
+
+        # Baixar a base bruta atualmente carregada (de qualquer fonte), para
+        # conferência ou ajuste externo. Fica desabilitado até haver dados.
+        self.btn_download_base = QPushButton("💾 Baixar Base de Dados Carregada")
+        self.btn_download_base.clicked.connect(self.download_base_dados)
+        self.btn_download_base.setEnabled(False)
+        self.btn_download_base.setToolTip("Salva a base bruta atual (Excel ou CSV). Carregue ou importe dados primeiro.")
+        load_l.addWidget(self.btn_download_base)
+
+        self.btn_trocar_ref = QPushButton("🏛️ Alterar Ativo de Referência")
+        self.btn_trocar_ref.clicked.connect(self.trocar_referencia)
+        self.btn_trocar_ref.setEnabled(False)
+        self.btn_trocar_ref.setToolTip(
+            "Escolhe outro ativo da base como taxa de referência, sem reimportar.")
+        load_l.addWidget(self.btn_trocar_ref)
+
         left.addWidget(load_box)
 
         # ----- Informações do Arquivo -----
@@ -922,7 +1850,8 @@ class PortfolioOptimizerGUI(QMainWindow):
 
                 if self.has_risk_free:
                     try:
-                        temp_optimizer = PortfolioOptimizer(df_base0_otimizacao, [])
+                        temp_optimizer = PortfolioOptimizer(df_base0_otimizacao, [],
+                                                            risk_free_column=self._coluna_referencia())
                         if hasattr(temp_optimizer, 'risk_free_rate_total'):
                             self.detected_risk_free_rate = temp_optimizer.risk_free_rate_total
                     except Exception:
@@ -1388,6 +2317,27 @@ class PortfolioOptimizerGUI(QMainWindow):
         btn_calc.clicked.connect(self.calculate_ranking)
         cfg_l.addWidget(btn_calc)
 
+        # Recálculo automático antes de cada otimização manual.
+        # Num walk-forward feito à mão, a cada nova janela o ranking muda e a
+        # seleção anterior fica velha. Sem isto o programa aceita a lista
+        # antiga calada; com isto ele refaz o trabalho de quem usa.
+        chk_auto = QCheckBox("🔄 Recalcular o ranking e reselecionar os ativos "
+                             "antes de cada otimização")
+        chk_auto.setChecked(True)
+        self.auto_rerank = BoolVar(chk_auto)
+        cfg_l.addWidget(chk_auto)
+
+        dica = QLabel(
+            "Marcado: ao clicar em Otimizar, o ranking é refeito para o período "
+            "processado no momento e os ativos são reselecionados pela faixa de "
+            "score abaixo. É o indicado para walk-forward manual, em que a cada "
+            "nova janela o ranking muda.\n"
+            "Desmarcado: vale a lista que estiver selecionada na aba Dados, "
+            "seja ela de qual período for.")
+        dica.setStyleSheet("color: gray;")
+        dica.setWordWrap(True)
+        cfg_l.addWidget(dica)
+
         self.ranking_config_frame.setVisible(False)
         layout.addWidget(self.ranking_config_frame)
 
@@ -1406,9 +2356,37 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.ranking_config_frame.setVisible(show)
         self.ranking_results_frame.setVisible(show)
 
+    def _problema_pesos_ranking(self):
+        """
+        Verifica se os pesos do ranking permitem classificar alguma coisa.
+        Devolve a mensagem do problema, ou None se estiver tudo bem.
+
+        Com peso útil zero todos os ativos empatam em 0,5 e a classificação
+        perde o sentido: o filtro de Score passa a cortar todos ou nenhum,
+        dependendo do intervalo. Melhor avisar do que entregar isso calado.
+        """
+        pi, pd_, pc = (self.peso_inc_var.get(), self.peso_desv_var.get(),
+                       self.peso_cor_var.get())
+        if pi + pd_ + pc <= 0:
+            return ("Os três pesos do ranking estão em zero (aba Ranking).\n\n"
+                    "Sem nenhum critério, todos os ativos empatam e a "
+                    "classificação não significa nada. Dê peso a pelo menos um.")
+        if not self.has_risk_free and pi + pd_ <= 0:
+            return ("Só a Correlação tem peso no ranking (aba Ranking), mas a "
+                    "base está SEM taxa de referência — e sem referência não há "
+                    "com o que correlacionar.\n\n"
+                    "Dê peso à Inclinação ou à Estabilidade, ou defina uma "
+                    "referência em \"Alterar Ativo de Referência\", na aba Dados.")
+        return None
+
     def calculate_ranking(self):
         if self.df is None:
             messagebox.showerror("Erro", "Carregue dados primeiro!")
+            return
+
+        problema = self._problema_pesos_ranking()
+        if problema:
+            messagebox.showerror("Erro", problema)
             return
 
         try:
@@ -1428,12 +2406,26 @@ class PortfolioOptimizerGUI(QMainWindow):
             messagebox.showerror("Erro", f"Erro no cálculo: {str(e)}")
 
     def display_ranking_results(self, ranking_result):
+        # Os campos de score são recriados abaixo, junto com o resto do painel.
+        # Sem guardar o que está neles, todo recálculo devolveria a faixa ao
+        # padrão 0,70–1,00 e apagaria em silêncio o critério do usuário — o que
+        # seria fatal com o recálculo automático, que refaz isso a cada
+        # otimização.
+        if hasattr(self, 'score_min_var'):
+            try:
+                self.score_min_lembrado = self.score_min_var.get()
+                self.score_max_lembrado = self.score_max_var.get()
+            except Exception:
+                pass
+
         clear_widget(self.ranking_results_frame)
 
         df_ranking = ranking_result['ranking']
 
+        ref = ranking_result['referencia']
+        texto_ref = ref if ref else "sem referência (medido contra a linha do zero)"
         info_text = (f"✅ Ranking calculado: {ranking_result['total_ativos']} ativos\n"
-                     f"📊 Referência: {ranking_result['referencia']}")
+                     f"📊 Referência: {texto_ref}")
         self.ranking_results_layout.addWidget(QLabel(info_text))
 
         columns = ('Posição', 'Ativo', 'Índice', 'Inclinação', 'R²', 'Correlação', 'Desvio')
@@ -1449,7 +2441,8 @@ class PortfolioOptimizerGUI(QMainWindow):
                 f"{row['Índice']:.4f}",
                 f"{row['Inclinação_Norm']:.3f}",
                 f"{row['R²']:.3f}",
-                f"{row['Correlação']:.3f}",
+                # Sem referência a correlação não existe: mostra "—" em vez de "nan"
+                "—" if pd.isna(row['Correlação']) else f"{row['Correlação']:.3f}",
                 f"{row['Desvio_Norm']:.3f}",
             )
             r = table.rowCount()
@@ -1470,14 +2463,14 @@ class PortfolioOptimizerGUI(QMainWindow):
         min_col = QVBoxLayout()
         min_col.addWidget(QLabel("📉 Score mínimo:"))
         e_min = QLineEdit()
-        self.score_min_var = NumVar(e_min, 0.7)
+        self.score_min_var = NumVar(e_min, getattr(self, 'score_min_lembrado', 0.7))
         min_col.addWidget(e_min)
         range_l.addLayout(min_col)
 
         max_col = QVBoxLayout()
         max_col.addWidget(QLabel("📈 Score máximo:"))
         e_max = QLineEdit()
-        self.score_max_var = NumVar(e_max, 1.0)
+        self.score_max_var = NumVar(e_max, getattr(self, 'score_max_lembrado', 1.0))
         max_col.addWidget(e_max)
         range_l.addLayout(max_col)
         sel_l.addLayout(range_l)
@@ -1721,7 +2714,8 @@ class PortfolioOptimizerGUI(QMainWindow):
                 else:
                     assets_used_in_optimization = selected_assets
 
-                optimizer_to_use = PortfolioOptimizer(self.df_analise, assets_used_in_optimization)
+                optimizer_to_use = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
+                                                      risk_free_column=self._coluna_referencia())
             else:
                 optimizer_to_use = self.optimizer
 
@@ -1906,82 +2900,405 @@ class PortfolioOptimizerGUI(QMainWindow):
         )
         if file_path:
             try:
-                self.dados_brutos = pd.read_excel(file_path)
-
-                if len(self.dados_brutos.columns) > 0:
-                    self.dados_brutos.columns.values[0] = "Data"
-
-                self.df = None
-                self.df_otimizacao = None
-                self.df_analise = None
-                self.has_risk_free = False
-                self.risk_free_column_name = None
-                self.detected_risk_free_rate = 0.0
-
-                if 'Data' in self.dados_brutos.columns:
-                    try:
-                        datas = pd.to_datetime(self.dados_brutos['Data'])
-                        self.periodo_disponivel = {
-                            'inicio': datas.min(),
-                            'fim': datas.max(),
-                            'total_dias': len(datas)
-                        }
-                    except Exception:
-                        self.periodo_disponivel = None
-
-                if len(self.dados_brutos.columns) > 2 and isinstance(self.dados_brutos.columns[1], str):
-                    col_name = self.dados_brutos.columns[1].lower()
-                    if any(term in col_name for term in ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']):
-                        self.has_risk_free = True
-                        self.risk_free_column_name = self.dados_brutos.columns[1]
-                        asset_columns = self.dados_brutos.columns[2:].tolist()
-                    else:
-                        asset_columns = self.dados_brutos.columns[1:].tolist()
-                else:
-                    asset_columns = self.dados_brutos.columns[1:].tolist()
-
-                file_name = os.path.basename(file_path)
-                if self.periodo_disponivel:
-                    status_text = (
-                        f"✅ Arquivo: {file_name}\n"
-                        f"📊 Dimensões: {self.dados_brutos.shape[0]} linhas x {self.dados_brutos.shape[1]} colunas\n"
-                        f"📅 Período: {self.periodo_disponivel['inicio'].strftime('%d/%m/%Y')} a "
-                        f"{self.periodo_disponivel['fim'].strftime('%d/%m/%Y')}\n"
-                        f"🗓️ Total: {self.periodo_disponivel['total_dias']} dias"
-                    )
-                else:
-                    status_text = (f"✅ Arquivo: {file_name}\n"
-                                   f"📊 Dimensões: {self.dados_brutos.shape[0]} linhas x "
-                                   f"{self.dados_brutos.shape[1]} colunas")
-
-                self.status_label.setText(status_text)
-
-                if self.has_risk_free:
-                    self.risk_free_info.setText(f"✅ Detectada: '{self.risk_free_column_name}'")
-                    self.risk_free_info.setStyleSheet("color: green;")
-                    self.manual_risk_entry.setEnabled(False)
-                    self.update_objective_options()
-                else:
-                    self.risk_free_info.setText("❌ Nenhuma taxa detectada")
-                    self.risk_free_info.setStyleSheet("color: red;")
-                    self.manual_risk_entry.setEnabled(True)
-
-                self.assets_listbox.delete(0, END)
-                for asset in asset_columns:
-                    self.assets_listbox.insert(END, asset)
-
-                self.update_advanced_widgets()
-                self.atualizar_datas_automaticas()
-                self._update_selection_info()
-
+                df = pd.read_excel(file_path)
+                if len(df.columns) > 0:
+                    df.columns.values[0] = "Data"
+                self._apply_raw_data(df, f"Arquivo: {os.path.basename(file_path)}")
                 messagebox.showinfo("Sucesso", "📥 Dados brutos carregados!\n🎯 Agora configure as janelas temporais.")
-
             except Exception as e:
                 messagebox.showerror("Erro", f"Erro ao carregar arquivo:\n{str(e)}")
+
+    def _apply_raw_data(self, df, origem, referencia=_AUTO_REF):
+        """
+        Recebe um DataFrame bruto (Data na 1ª coluna) e prepara todo o estado da
+        aplicação: detecta a taxa de referência, popula a lista de ativos e
+        ajusta as janelas temporais.
+
+        Compartilhado por todas as origens (planilha e importações online), para
+        que todas se comportem exatamente igual.
+
+        referencia:
+          _AUTO_REF -> detecta pelo nome da 2ª coluna (comportamento padrão);
+          None      -> força SEM referência;
+          "<nome>"  -> força essa coluna como referência.
+        A forma explícita existe porque a detecção por nome é por palavra-chave
+        e 'ref' aparece dentro de "REFERENCIADO DI" — nome comum de fundo. Ao
+        trocar a referência pela interface, dizemos qual é, sem adivinhação.
+        """
+        self.dados_brutos = df
+
+        self.df = None
+        self.df_otimizacao = None
+        self.df_analise = None
+        self.has_risk_free = False
+        self.risk_free_column_name = None
+        self.detected_risk_free_rate = 0.0
+        self.periodo_disponivel = None
+
+        if 'Data' in self.dados_brutos.columns:
+            try:
+                datas = pd.to_datetime(self.dados_brutos['Data'])
+                self.periodo_disponivel = {
+                    'inicio': datas.min(),
+                    'fim': datas.max(),
+                    'total_dias': len(datas)
+                }
+            except Exception:
+                self.periodo_disponivel = None
+
+        # Taxa de referência: informada explicitamente ou detectada pelo nome
+        colunas = self.dados_brutos.columns.tolist()
+        if referencia is not _AUTO_REF:
+            if referencia and referencia in colunas:
+                self.has_risk_free = True
+                self.risk_free_column_name = referencia
+                asset_columns = [c for c in colunas if c not in ('Data', referencia)]
+            else:
+                asset_columns = [c for c in colunas if c != 'Data']
+        elif len(colunas) > 2 and isinstance(colunas[1], str):
+            col_name = colunas[1].lower()
+            if any(term in col_name for term in ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']):
+                self.has_risk_free = True
+                self.risk_free_column_name = colunas[1]
+                asset_columns = colunas[2:]
+            else:
+                asset_columns = colunas[1:]
+        else:
+            asset_columns = colunas[1:]
+
+        if self.periodo_disponivel:
+            status_text = (
+                f"✅ {origem}\n"
+                f"📊 Dimensões: {self.dados_brutos.shape[0]} linhas x {self.dados_brutos.shape[1]} colunas\n"
+                f"📅 Período: {self.periodo_disponivel['inicio'].strftime('%d/%m/%Y')} a "
+                f"{self.periodo_disponivel['fim'].strftime('%d/%m/%Y')}\n"
+                f"🗓️ Total: {self.periodo_disponivel['total_dias']} dias"
+            )
+        else:
+            status_text = (f"✅ {origem}\n"
+                           f"📊 Dimensões: {self.dados_brutos.shape[0]} linhas x "
+                           f"{self.dados_brutos.shape[1]} colunas")
+
+        self.status_label.setText(status_text)
+
+        if self.has_risk_free:
+            self.risk_free_info.setText(f"✅ Detectada: '{self.risk_free_column_name}'")
+            self.risk_free_info.setStyleSheet("color: green;")
+            self.manual_risk_entry.setEnabled(False)
+            self.update_objective_options()
+        else:
+            self.risk_free_info.setText("❌ Nenhuma taxa detectada")
+            self.risk_free_info.setStyleSheet("color: red;")
+            self.manual_risk_entry.setEnabled(True)
+            self.update_objective_options()
+
+        # A aba Auto-Otimização repete a referência no cabeçalho
+        self._atualizar_rotulo_ref_auto()
+
+        self.assets_listbox.delete(0, END)
+        for asset in asset_columns:
+            self.assets_listbox.insert(END, asset)
+
+        # Há base carregada: libera o download dela e a troca de referência
+        if hasattr(self, 'btn_download_base'):
+            self.btn_download_base.setEnabled(True)
+        if hasattr(self, 'btn_trocar_ref'):
+            self.btn_trocar_ref.setEnabled(True)
+
+        self.update_advanced_widgets()
+        self.atualizar_datas_automaticas()
+        self._update_selection_info()
+
+    def download_base_dados(self):
+        """
+        Salva a base BRUTA atualmente carregada (de qualquer fonte: planilha,
+        Yahoo, B3 ou Excel) em Excel ou CSV, para conferência ou ajuste externo.
+
+        Grava exatamente o que está em memória (Data + colunas de preços,
+        incluindo a de referência, se houver) — sem a transformação base zero,
+        que é aplicada só na hora de otimizar.
+        """
+        if getattr(self, 'dados_brutos', None) is None or self.dados_brutos.empty:
+            messagebox.showerror("Erro", "Não há base de dados carregada para baixar.")
+            return
+
+        filename = filedialog.asksaveasfilename(
+            title="Salvar base de dados carregada",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if not filename:
+            return
+
+        try:
+            df = self.dados_brutos.copy()
+
+            # Garante a coluna de datas como data de verdade (não texto)
+            if 'Data' in df.columns:
+                df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
+
+            if filename.lower().endswith(".csv"):
+                # Padrão brasileiro: ";" e "," — abre direto no Excel pt-BR
+                df.to_csv(filename, index=False, encoding='utf-8-sig',
+                          sep=';', decimal=',', date_format='%d/%m/%Y')
+            else:
+                with pd.ExcelWriter(filename, engine='openpyxl', date_format='DD/MM/YYYY') as writer:
+                    df.to_excel(writer, sheet_name='Base de Dados', index=False)
+                    ws = writer.sheets['Base de Dados']
+
+                    from openpyxl.styles import Font
+                    for cell in ws[1]:
+                        cell.font = Font(bold=True)
+                    ws.freeze_panes = "B2"
+
+                    # Data em DD/MM/YYYY; demais colunas como número com 2 casas
+                    for row in ws.iter_rows(min_row=2, min_col=1, max_col=1):
+                        for cell in row:
+                            cell.number_format = "DD/MM/YYYY"
+                    for row in ws.iter_rows(min_row=2, min_col=2):
+                        for cell in row:
+                            cell.number_format = "#,##0.00"
+
+                    for col_cells in ws.columns:
+                        letra = col_cells[0].column_letter
+                        largura = max((len(str(c.value)) for c in col_cells if c.value is not None),
+                                      default=10)
+                        ws.column_dimensions[letra].width = min(largura + 2, 22)
+
+            n_ativos = len([c for c in df.columns if c != 'Data'])
+            messagebox.showinfo(
+                "Sucesso",
+                f"💾 Base salva em:\n{filename}\n\n"
+                f"📊 {df.shape[0]} linhas × {n_ativos} colunas de preços.")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao salvar a base:\n{str(e)}")
+
+    def closeEvent(self, event):
+        """
+        Ao fechar o programa, apaga os arquivos que a importação da CVM baixou —
+        se o usuário assim quiser.
+
+        Os dois lados têm razão, e por isso a decisão é dele (caixa de escolha
+        na janela de importação, preferência gravada em disco):
+        - APAGANDO, não ficam centenas de MB na máquina; a base já importada
+          pode ser guardada pelo botão "Baixar Base de Dados Carregada".
+        - GUARDANDO, quem repete sempre os mesmos fundos evita rebaixar tudo a
+          cada abertura.
+
+        A remoção é SELETIVA — só os arquivos que o próprio programa baixou
+        (inf_diario_fi_*.csv e cad_fi_hist*.csv). A pasta é escolhida pelo
+        usuário e pode conter arquivos dele (o CNPJ.csv, por exemplo), que não
+        são tocados; a pasta só é removida se ficar vazia.
+        """
+        try:
+            pastas = getattr(self, 'cvm_caches_usados', set())
+            if CVM_OK and pastas:
+                if ler_preferencia(PREF_LIMPAR_CACHE, True):
+                    total = 0
+                    for pasta in pastas:
+                        total += cvmsrc.limpar_cache(pasta)
+                    if total:
+                        print(f"🧹 Cache da CVM limpo: {total} arquivo(s) removido(s).")
+                else:
+                    print("📦 Cache da CVM mantido (escolha do usuário).")
+        except Exception as e:
+            print(f"⚠️ Não foi possível limpar o cache da CVM: {e}")
+        super().closeEvent(event)
+
+    def trocar_referencia(self):
+        """
+        Troca a taxa de referência sobre a base JÁ carregada, sem reimportar.
+
+        Qualquer coluna pode virar referência (ou nenhuma). A escolhida sai da
+        lista de ativos e passa a ser o benchmark; a anterior volta a ser um
+        ativo comum.
+
+        Como a referência entra no cálculo de Sharpe, excesso e dos objetivos
+        de excesso, o período processado é invalidado — é preciso processar de
+        novo na própria aba.
+        """
+        df = getattr(self, 'dados_brutos', None)
+        if df is None or df.empty or len(df.columns) < 2:
+            messagebox.showerror("Erro", "Não há base carregada.")
+            return
+
+        atual = getattr(self, 'risk_free_column_name', None)
+        candidatos = [c for c in df.columns if c != 'Data']
+        escolhido = _escolher_referencia(self, candidatos, atual=atual)
+
+        if escolhido == atual:
+            return  # nada mudou
+
+        novo = df.copy()
+
+        # A referência anterior volta a ser ativo comum. Se o nome foi criado
+        # por nós (prefixo Taxa_Ref_), devolve o nome original do ativo; se era
+        # um nome próprio da planilha do usuário, preserva como está.
+        if atual and atual in novo.columns and atual.startswith('Taxa_Ref_'):
+            original = atual[len('Taxa_Ref_'):]
+            if original and original not in novo.columns:
+                novo = novo.rename(columns={atual: original})
+
+        nome_ref = None
+        if escolhido:
+            novo, nome_ref = promote_reference_column(novo, escolhido)
+            if nome_ref is None:      # o nome já vinha prefixado: só reposiciona
+                outras = [c for c in novo.columns if c not in ('Data', escolhido)]
+                novo = novo[['Data', escolhido] + outras]
+                nome_ref = escolhido
+
+        origem = getattr(self, 'status_label', None)
+        texto_origem = "Base carregada"
+        if origem is not None:
+            primeira = origem.text().split('\n')[0]
+            texto_origem = primeira.lstrip('✅ ').strip() or texto_origem
+
+        self._apply_raw_data(novo, texto_origem, referencia=nome_ref)
+
+        if nome_ref:
+            msg = f"🏛️ Referência agora é:\n{nome_ref}"
+        else:
+            msg = ("Base agora está SEM taxa de referência.\n\n"
+                   "Os objetivos que dependem dela ficam indisponíveis.")
+        messagebox.showinfo(
+            "Referência alterada",
+            msg + "\n\n⚠️ Processe o período novamente para os cálculos "
+                  "refletirem a nova referência.")
+
+    def open_yahoo_import(self):
+        """Abre o diálogo de importação de cotações do Yahoo Finance."""
+        if not YFINANCE_OK:
+            messagebox.showerror(
+                "yfinance não instalado",
+                "A importação pelo Yahoo Finance exige a biblioteca 'yfinance'.\n\n"
+                "Instale com:\n    pip install yfinance\n\n"
+                "Depois reinicie o aplicativo."
+            )
+            return
+
+        self._run_import_dialog(YahooImportDialog(self), "Yahoo Finance")
+
+    def open_b3_import(self):
+        """Abre o diálogo de importação de cotações da B3 (COTAHIST)."""
+        if not B3_OK:
+            messagebox.showerror(
+                "Importação da B3 indisponível",
+                "Não foi possível carregar o módulo de importação da B3.\n\n"
+                f"Motivo: {B3_IMPORT_ERROR}\n\n"
+                "Verifique:\n"
+                "• se o arquivo 'b3_series_wide_com_limpeza.py' está na MESMA "
+                "pasta que 'desktop_app_qt.py';\n"
+                "• se a biblioteca 'requests' está instalada no mesmo Python "
+                "(pip install requests).\n\n"
+                "Depois reinicie o aplicativo.")
+            return
+        self._run_import_dialog(B3ImportDialog(self), "B3")
+
+    def open_excel_rf_import(self):
+        """Abre o diálogo de importação via Excel/STOCKHISTORY (renda fixa)."""
+        if not EXCELRF_OK:
+            messagebox.showerror(
+                "Importação via Excel indisponível",
+                "Não foi possível carregar o módulo de importação via Excel.\n\n"
+                f"Motivo: {EXCELRF_IMPORT_ERROR}\n\n"
+                "Verifique se o arquivo 'b3_excel_rendafixa.py' está na MESMA "
+                "pasta que 'desktop_app_qt.py'.\n\n"
+                "Depois reinicie o aplicativo.")
+            return
+        self._run_import_dialog(ExcelRFImportDialog(self), "Excel (renda fixa)")
+
+    def open_cvm_import(self):
+        """Abre o diálogo de importação de cotas de fundos (dados abertos da CVM)."""
+        if not CVM_OK:
+            messagebox.showerror(
+                "Importação da CVM indisponível",
+                "Não foi possível carregar o módulo de importação da CVM.\n\n"
+                f"Motivo: {CVM_IMPORT_ERROR}\n\n"
+                "Verifique:\n"
+                "• se o arquivo 'cvm_fundos.py' está na MESMA pasta que "
+                "'desktop_app_qt.py';\n"
+                "• se a biblioteca 'requests' está instalada no mesmo Python "
+                "(pip install requests).\n\n"
+                "Depois reinicie o aplicativo.")
+            return
+        self._run_import_dialog(CVMImportDialog(self), "CVM (fundos)")
+
+    def _run_import_dialog(self, dlg, fonte):
+        """Executa um diálogo de importação e aplica o resultado, se aceito."""
+        if dlg.exec_() != QDialog.Accepted or dlg.result_df is None:
+            return
+        try:
+            self._apply_raw_data(dlg.result_df, dlg.origem_desc)
+            msg = f"📥 {len(dlg.result_df.columns) - 1} séries importadas ({fonte})!"
+            if dlg.nome_ref:
+                msg += f"\n🏛️ Taxa de referência: '{dlg.nome_ref}'"
+
+            # Relatório de limpeza (só as fontes B3/Excel devolvem)
+            rel = getattr(dlg, 'relatorio', None)
+            if rel:
+                if rel.get('regra1'):
+                    msg += f"\n🧹 Excluídos (sem dado na 1ª data): {', '.join(rel['regra1'])}"
+                if rel.get('regra2'):
+                    msg += (f"\n🧹 Excluídos (>{rel.get('k')} dias seguidos sem dado): "
+                            f"{', '.join(rel['regra2'])}")
+
+            if dlg.erros:
+                msg += f"\n\n⚠️ Sem dados para: {', '.join(dlg.erros)}"
+            msg += "\n\n🎯 Agora configure as janelas temporais."
+            messagebox.showinfo("Sucesso", msg)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao aplicar os dados importados:\n{str(e)}")
+
+    def _atualizar_rotulo_ref_auto(self):
+        """
+        Mostra na aba Auto-Otimização qual é a referência em uso — a mesma da
+        aba Dados, escolhida lá. Repetir a informação aqui evita a dúvida de
+        estar olhando resultados calculados contra outro benchmark.
+        """
+        lbl = getattr(self, 'auto_ref_label', None)
+        if lbl is None:
+            return
+        if getattr(self, 'dados_brutos', None) is None:
+            lbl.setText("🏛️ Referência: definida na aba Dados, ao carregar os dados.")
+            lbl.setStyleSheet("color: gray;")
+        elif self.has_risk_free:
+            lbl.setText(f"🏛️ Referência (definida na aba Dados): "
+                        f"<b>{self.risk_free_column_name}</b>")
+            lbl.setStyleSheet("color: green;")
+        else:
+            lbl.setText("🏛️ <b>Sem taxa de referência</b> — Ref% fica em 0% e o "
+                        "ranking mede cada ativo contra a linha do zero. "
+                        "Para definir uma, use \"Alterar Ativo de Referência\" na aba Dados.")
+            lbl.setStyleSheet("color: #b36b00;")
+
+    def _coluna_referencia(self):
+        """Informa ao otimizador qual coluna é a referência.
+
+        Quem decide isso é a interface — pela detecção automática na importação
+        ou pela escolha manual do usuário. Sem essa informação o otimizador
+        precisa adivinhar pelo nome da segunda coluna, e a adivinhação erra
+        feio com fundos: qualquer *REFERENCIADO DI* contém 'ref' e seria
+        tratado como taxa de referência, sumindo da carteira.
+
+        Retorna None quando não há referência — o que é diferente de "não sei".
+        """
+        return self.risk_free_column_name if self.has_risk_free else None
 
     def update_objective_options(self):
         """Atualizar opções de objetivo baseado na taxa livre"""
         _clear_layout(self.risk_free_obj_layout)
+
+        # Os botões acabaram de ser destruídos, mas as referências a eles
+        # continuam nos dicionários. Se um objetivo de excesso estava escolhido
+        # e a referência foi retirada, a escolha ficaria valendo sem aparecer na
+        # tela — a otimização rodaria um objetivo impossível. Por isso a faxina
+        # abaixo, que volta ao objetivo padrão quando isso acontece.
+        escolhido = self.objective_var.get()
+        for obj in self.risk_free_objectives:
+            self.objective_buttons.pop(obj, None)
+            self.objective_var.buttons.pop(obj, None)
+        if escolhido in self.risk_free_objectives and not self.has_risk_free:
+            self.objective_buttons["Maximizar Sharpe Ratio"].setChecked(True)
 
         if self.has_risk_free:
             sep = QFrame()
@@ -1998,6 +3315,11 @@ class PortfolioOptimizerGUI(QMainWindow):
                 self.risk_free_obj_layout.addWidget(rb)
                 self.objective_buttons[obj] = rb
                 self.objective_var.add(obj, rb)
+
+            # A referência mudou, mas continua existindo: devolve ao usuário o
+            # objetivo de excesso que ele já havia escolhido.
+            if escolhido in self.risk_free_objectives:
+                self.objective_buttons[escolhido].setChecked(True)
 
     def update_advanced_widgets(self):
         self.update_constraints_widgets()
@@ -2455,6 +3777,34 @@ class PortfolioOptimizerGUI(QMainWindow):
                 messagebox.showerror("Erro", f"Peso mínimo > máximo para {asset}")
                 return None
 
+        # O que está definido na aba Avançado é IMPERATIVO. Se algum ativo com
+        # regra não está entre os selecionados, a regra não vai ser aplicada —
+        # e o otimizador entregaria uma carteira diferente da pedida, sem nada
+        # na tela denunciando isso. Melhor recusar e explicar.
+        selecionados = set(self.get_selected_assets())
+        ausentes = [a for a in self.individual_constraints if a not in selecionados]
+        if ausentes:
+            lista = ', '.join(ausentes[:12]) + ('...' if len(ausentes) > 12 else '')
+            texto = (f"❌ {len(ausentes)} ativo(s) têm regra na aba Avançado mas "
+                     f"NÃO estão selecionados na aba Dados:\n\n{lista}\n\n")
+            if self.use_ranking.get() and self.auto_rerank.get():
+                # O recálculo automático acabou de refazer a seleção: é de longe
+                # a causa mais provável, e a saída depende de qual das duas
+                # coisas o usuário realmente quer.
+                texto += ("Causa mais provável: o recálculo automático do ranking "
+                          "(aba Ranking) refez a seleção e descartou esses ativos.\n\n"
+                          "Como resolver, conforme o que você quer:\n"
+                          "• Manter a carteira/regras do Avançado → desmarque "
+                          "\"Recalcular o ranking...\" na aba Ranking.\n"
+                          "• Deixar o ranking escolher os ativos → limpe as "
+                          "restrições individuais na aba Avançado.")
+            else:
+                texto += ("Como resolver:\n"
+                          "• Selecione esses ativos na aba Dados, ou\n"
+                          "• Remova as regras deles na aba Avançado.")
+            messagebox.showerror("Regras da aba Avançado não podem ser aplicadas", texto)
+            return None
+
         return self.individual_constraints.copy()
 
     def get_short_configuration(self):
@@ -2486,12 +3836,75 @@ class PortfolioOptimizerGUI(QMainWindow):
         selected_indices = self.assets_listbox.curselection()
         return [self.assets_listbox.get(i) for i in selected_indices]
 
+    def _rerank_automatico(self):
+        """
+        Refaz ranking e seleção antes da otimização manual, quando pedido.
+
+        Existe por causa do walk-forward feito à mão: a cada janela nova o
+        ranking muda, e a seleção da janela anterior fica velha. Antes, o
+        programa aceitava essa lista antiga sem dizer nada — e o resultado
+        saía com cara de certo.
+
+        Só age com "Ativar ranking automático de ativos" E a caixa de recálculo
+        marcadas. Devolve False para interromper a otimização quando não dá
+        para montar uma seleção válida.
+        """
+        self.ultimo_rerank = None
+        if not (self.use_ranking.get() and self.auto_rerank.get()):
+            return True     # lista fixa: segue com o que estiver selecionado
+
+        problema = self._problema_pesos_ranking()
+        if problema:
+            messagebox.showerror("Erro", problema)
+            return False
+
+        ranking_result = calculate_asset_ranking(
+            self.df, self.risk_free_column_name,
+            self.peso_inc_var.get(), self.peso_desv_var.get(), self.peso_cor_var.get())
+
+        if ranking_result is None:
+            messagebox.showerror(
+                "Erro", "Não foi possível calcular o ranking para este período.")
+            return False
+
+        self.display_ranking_results(ranking_result)
+
+        score_min = self.score_min_var.get()
+        score_max = self.score_max_var.get()
+        if score_min > score_max:
+            messagebox.showerror(
+                "Erro", "Na aba Ranking, o score mínimo está maior que o máximo.")
+            return False
+
+        df_rank = ranking_result['ranking']
+        escolhidos = df_rank[(df_rank['Índice'] >= score_min) &
+                             (df_rank['Índice'] <= score_max)]['Ativo'].tolist()
+
+        if len(escolhidos) < 2:
+            messagebox.showerror(
+                "Erro",
+                f"O ranking deste período devolveu apenas {len(escolhidos)} ativo(s) "
+                f"na faixa de score {score_min:.2f} – {score_max:.2f}, e a otimização "
+                f"precisa de pelo menos 2.\n\n"
+                f"Alargue a faixa na aba Ranking, ou desmarque o recálculo "
+                f"automático para usar a lista selecionada à mão.")
+            return False
+
+        self.select_assets_by_score()
+        print(f"🔄 Ranking refeito para o período: {len(escolhidos)} ativo(s) "
+              f"na faixa {score_min:.2f}–{score_max:.2f} → {', '.join(escolhidos)}")
+        self.ultimo_rerank = escolhidos
+        return True
+
     # -------------------------------------------------------------------------
     # OTIMIZAÇÃO
     # -------------------------------------------------------------------------
     def optimize_portfolio(self):
         if self.df is None:
             messagebox.showerror("Erro", "Carregue um arquivo Excel primeiro!")
+            return
+
+        if not self._rerank_automatico():
             return
 
         selected_assets = self.get_selected_assets()
@@ -2530,7 +3943,8 @@ class PortfolioOptimizerGUI(QMainWindow):
             status_label.setText("Inicializando otimizador...")
             QApplication.processEvents()
 
-            self.optimizer = PortfolioOptimizer(self.df, all_assets)
+            self.optimizer = PortfolioOptimizer(self.df, all_assets,
+                                                risk_free_column=self._coluna_referencia())
 
             status_label.setText("Configurando parâmetros...")
             QApplication.processEvents()
@@ -2609,10 +4023,11 @@ class PortfolioOptimizerGUI(QMainWindow):
                         "Otimização concluída com ressalvas",
                         "⚠️ Otimização concluída, mas SEM convergência plena.\n\n"
                         f"{self.result['degraded_message']}"
-                        + self._meta_message()
+                        + self._rerank_message() + self._meta_message()
                     )
                 else:
-                    messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!" + self._meta_message())
+                    messagebox.showinfo("Sucesso", "🎉 Otimização concluída com sucesso!"
+                                        + self._rerank_message() + self._meta_message())
                 self.notebook.setCurrentWidget(self.tab_results)
             else:
                 messagebox.showerror("Erro", f"❌ {self.result['message']}")
@@ -2621,6 +4036,16 @@ class PortfolioOptimizerGUI(QMainWindow):
             if progress_window is not None:
                 progress_window.close()
             messagebox.showerror("Erro", f"Erro durante otimização:\n{str(e)}")
+
+    def _rerank_message(self):
+        """Avisa que a seleção foi refeita — quem otimiza precisa saber que a
+        carteira não saiu da lista que ele tinha marcado, e sim do ranking
+        recalculado para este período."""
+        escolhidos = getattr(self, 'ultimo_rerank', None)
+        if not escolhidos:
+            return ""
+        return (f"\n\n🔄 Ranking recalculado para este período: "
+                f"{len(escolhidos)} ativo(s) selecionado(s) por score.")
 
     def _meta_message(self):
         """Texto sobre o resultado da meta (vazio se meta não foi usada)."""
@@ -2720,7 +4145,8 @@ class PortfolioOptimizerGUI(QMainWindow):
                 else:
                     assets_used_in_optimization = selected_assets
 
-                optimizer_valid = PortfolioOptimizer(self.df_analise, assets_used_in_optimization)
+                optimizer_valid = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
+                                                     risk_free_column=self._coluna_referencia())
 
                 n_assets_optimization = len(self.result['weights'])
                 n_assets_validation = optimizer_valid.returns_data.shape[1] if len(optimizer_valid.returns_data.shape) > 1 else 1
@@ -3020,7 +4446,8 @@ Isso ajuda a detectar:
                 else:
                     assets_used_in_optimization = selected_assets
 
-                optimizer_extended = PortfolioOptimizer(self.df_analise, assets_used_in_optimization)
+                optimizer_extended = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
+                                                        risk_free_column=self._coluna_referencia())
 
                 if self.has_risk_free and hasattr(self.optimizer, 'risk_free_rate_total'):
                     final_risk_free_rate = self.optimizer.risk_free_rate_total
@@ -3162,7 +4589,9 @@ Isso ajuda a detectar:
 
         # Cabeçalho
         header_box = QGroupBox("🤖 Auto-Otimização Inteligente")
-        header_l = QHBoxLayout(header_box)
+        header_v = QVBoxLayout(header_box)
+        header_l = QHBoxLayout()
+        header_v.addLayout(header_l)
         lbl = QLabel("Walk-Forward Optimization com Ranking Dinâmico Anti-Overfitting")
         lbl.setFont(bold())
         header_l.addWidget(lbl)
@@ -3170,6 +4599,14 @@ Isso ajuda a detectar:
         self.status_auto_label = QLabel("Aguardando configuração...")
         self.status_auto_label.setStyleSheet("color: blue;")
         header_l.addWidget(self.status_auto_label)
+
+        # A referência usada aqui é a MESMA da aba Dados. Fica à vista para não
+        # restar dúvida sobre qual benchmark alimentou o ranking e as métricas.
+        self.auto_ref_label = QLabel()
+        self.auto_ref_label.setWordWrap(True)
+        header_v.addWidget(self.auto_ref_label)
+        self._atualizar_rotulo_ref_auto()
+
         main_l.addWidget(header_box)
 
         content_l = QHBoxLayout()
@@ -3724,6 +5161,12 @@ Isso ajuda a detectar:
                         'objective': obj_mapping[obj_key],
                         'rank_min': self.rank_min_var.get(),
                         'rank_max': self.rank_max_var.get(),
+                        # Pesos do ranking, vindos da aba Ranking. Antes ficavam
+                        # fixos em 0,33 aqui, e mexer nos controles de lá não
+                        # tinha efeito nenhum sobre a auto-otimização.
+                        'peso_inc': self.peso_inc_var.get(),
+                        'peso_desv': self.peso_desv_var.get(),
+                        'peso_cor': self.peso_cor_var.get(),
                         'weight_min': self.weight_min_var.get() / 100,
                         'weight_max': self.weight_max_var.get() / 100,
                         'use_shorts': self.use_auto_shorts.get() and len(self.auto_short_weights) > 0,
@@ -3943,7 +5386,9 @@ Isso ajuda a detectar:
 
             ranking_result = calculate_asset_ranking(
                 df_otim, self.risk_free_column_name,
-                peso_inc=0.33, peso_desv=0.33, peso_cor=0.33
+                peso_inc=config['peso_inc'],
+                peso_desv=config['peso_desv'],
+                peso_cor=config['peso_cor']
             )
 
             if not ranking_result:
@@ -3984,7 +5429,8 @@ Isso ajuda a detectar:
                 else:
                     all_assets = selected_assets
 
-                self.optimizer = PortfolioOptimizer(self.df, all_assets)
+                self.optimizer = PortfolioOptimizer(self.df, all_assets,
+                                                    risk_free_column=self._coluna_referencia())
 
                 if hasattr(self.optimizer, 'risk_free_rate_total'):
                     risk_free_rate = self.optimizer.risk_free_rate_total
@@ -4063,7 +5509,8 @@ Isso ajuda a detectar:
                     print("⚠️ Nem todos os ativos disponíveis no período completo")
                     return None
 
-                optimizer_completo = PortfolioOptimizer(df_completo, available_assets)
+                optimizer_completo = PortfolioOptimizer(df_completo, available_assets,
+                                                        risk_free_column=self._coluna_referencia())
 
                 portfolio_returns_completo = np.dot(optimizer_completo.returns_data.values, optimized_weights)
                 cumulative_completo = np.cumsum(portfolio_returns_completo)
@@ -4495,6 +5942,11 @@ Isso ajuda a detectar:
 
         if not any(var.get() for var in self.objectives.values()):
             messagebox.showerror("Erro", "Selecione pelo menos um objetivo!")
+            return False
+
+        problema = self._problema_pesos_ranking()
+        if problema:
+            messagebox.showerror("Erro", problema)
             return False
 
         return True

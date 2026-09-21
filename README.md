@@ -16,7 +16,7 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 
 ## 1.1 Principais Funcionalidades
 
-- Carregamento de dados históricos de preços via planilha Excel.
+- Carregamento de dados históricos de preços via planilha Excel **ou busca online em várias fontes** (Yahoo Finance, B3/COTAHIST, Excel/STOCKHISTORY e CVM/fundos de investimento).
 - Configuração de janelas temporais separadas para otimização e validação.
 - **Oito objetivos de otimização**, incluindo Sharpe, Sortino, Under Water, linearidade e dois objetivos aplicados ao excesso sobre a referência.
 - Restrições globais e individuais de peso por ativo, com importação via arquivo Excel/CSV.
@@ -37,6 +37,7 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 | Sistema Operacional    | Windows 10/11, Linux ou macOS                |
 | Python                 | 3.8 ou superior (recomendado 3.10+)          |
 | Bibliotecas            | PyQt5, pandas, numpy, scipy, matplotlib, openpyxl |
+| Opcional               | yfinance (Yahoo Finance), requests (B3 e CVM — normalmente já presente), xlwings + Excel 365/Windows (importação via Excel) |
 | Módulo adicional       | optimizer.py (incluso no projeto)            |
 | Resolução de tela      | Mínimo 1400 × 900 pixels (recomendado 2100+ de largura para ver a tabela da Auto-Otimização inteira) |
 | Formato de dados       | Planilha Excel (.xlsx ou .xls) e CSV         |
@@ -49,6 +50,25 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 - A janela principal do programa será exibida.
 
 💡 O arquivo `optimizer.py` precisa estar na mesma pasta que `desktop_app_qt.py` para o programa funcionar corretamente.
+
+⚠️ Os módulos das fontes de dados (`cvm_fundos.py`, `b3_series_wide_com_limpeza.py`, `b3_excel_rendafixa.py`) também precisam estar **na mesma pasta**. Sem eles o aplicativo abre normalmente, mas o botão da fonte correspondente avisa o que está faltando.
+
+## 1.4 Gerar o Executável (Windows)
+
+Para distribuir o programa a quem não tem Python instalado, dê **duplo clique em `Construir executavel.bat`**. Ele cuida de tudo: localiza o Python, cria um ambiente isolado (`.venv`), instala as dependências e chama o PyInstaller.
+
+O resultado é um **único arquivo**: `dist\Otimizador de Portfolio.exe`. Ele sozinho já é o programa — basta enviá-lo ao usuário final, que não precisa de Python nem de mais nada instalado.
+
+Duas escolhas feitas na receita de construção (`desktop_app_qt.spec`), e o porquê:
+
+| **Escolha** | **Motivo** |
+| ----------- | ---------- |
+| **Arquivo único** | Simples de distribuir e impossível de errar na hora de abrir. O custo é a velocidade: o executável descompacta o próprio conteúdo a cada execução, então **sempre** leva alguns segundos para iniciar. |
+| **Console ligado** | O programa imprime o andamento da auto-otimização (steps, composição da carteira, avisos do solver). Escondendo o console esses logs se perdem. Para preferir a janela limpa, troque `console=True` por `False` no `.spec`. |
+
+💡 **Se um dia a velocidade de abertura pesar mais que a facilidade de distribuir**, dá para gerar em **pasta** (abre bem mais rápido, porque não há descompactação). O `.spec` traz, ao final, o bloco comentado e as instruções para essa troca.
+
+💡 As fontes opcionais (`yfinance` e `xlwings`) são instaladas **em separado** pelo `.bat`, sem interromper a construção se alguma falhar — o aplicativo funciona sem elas.
 
 # 2\. Estrutura da Interface
 
@@ -85,8 +105,174 @@ A planilha deve seguir o seguinte padrão:
 - Selecione o arquivo .xlsx ou .xls no diálogo que aparecer.
 - O painel 'Informações do Arquivo' exibirá: nome do arquivo, número de linhas e colunas, período disponível (data início e data fim) e total de dias.
 - Se uma taxa de referência for detectada automaticamente, ela aparecerá em verde no painel 'Taxa de Referência Detectada'. Caso contrário, um aviso em vermelho indicará que nenhuma taxa foi encontrada.
+- Acertou ou errou, a escolha não é definitiva: o botão **🏛️ Alterar Ativo de Referência** troca a referência a qualquer momento (seção 3.2.3).
 
 ⚠️ Se a taxa de referência for detectada automaticamente, o campo de taxa manual na aba Configuração é desabilitado. Se não for detectada, o campo manual permanece disponível para entrada manual do valor acumulado no período.
+
+## 3.2.1 Fontes Online (Yahoo, B3, Excel e CVM)
+
+Além de carregar uma planilha, o programa busca cotações **direto da internet** por quatro fontes. Qualquer uma delas alimenta o programa exatamente como uma planilha carregada — mesmo fluxo daí em diante (detecção da taxa de referência, lista de ativos e janelas temporais). Todas entregam séries de preços (ou cotas, no caso dos fundos), e a transformação para base zero é feita internamente ao processar o período.
+
+| **Fonte**            | **Botão**                          | **Melhor para**                                  | **Requisito**                         |
+| -------------------- | ---------------------------------- | ------------------------------------------------ | ------------------------------------- |
+| Yahoo Finance        | 🌐 Importar do Yahoo Finance       | Ações internacionais, cripto, uso rápido          | `yfinance`                            |
+| B3 (COTAHIST)        | 🇧🇷 Importar da B3 (COTAHIST)      | Ações e ETFs brasileiros (fonte oficial)          | `requests`                            |
+| Excel (STOCKHISTORY) | 📊 Importar via Excel (renda fixa) | ETFs de renda fixa que o COTAHIST não cobre       | Windows + Excel 365 + `xlwings`       |
+| CVM (fundos)         | 🏦 Importar Fundos (CVM)           | Cotas diárias de fundos de investimento           | `requests`                            |
+
+💡 As fontes da B3, do Excel e da CVM usam dados oficiais/institucionais, mais confiáveis que o Yahoo para o mercado brasileiro.
+
+### Regras de limpeza (iguais nas quatro fontes)
+
+Toda importação online passa pelas **mesmas três regras**, aplicadas **nesta ordem** sobre a matriz Data × Ativos:
+
+| **Ordem** | **Regra**                                                                 |
+| --------- | ------------------------------------------------------------------------- |
+| 0         | Valor **zero** conta como "sem dado".                                     |
+| 1         | Coluna **sem dado na primeira data** → o ativo é **excluído**.            |
+| 2         | Coluna com mais de **k** registros consecutivos sem dado → **excluída**.  |
+| 3         | Lacunas restantes → preenchidas com o **valor do dia anterior**.          |
+
+O valor de **k** é o campo **🧹 Elimina após N dias sem dado** (padrão 10), presente nas três janelas de importação junto com o tipo de preço e o período.
+
+⚠️ **A ordem importa:** as regras 1 e 2 avaliam os buracos **antes** do preenchimento; a regra 3 vem por último. Se o preenchimento viesse antes, não sobrariam buracos para as regras 1 e 2 analisarem.
+
+💡 **Por que isso importa:** sem a regra 3, lacunas chegariam como vazio ao otimizador, que descarta a **linha inteira** quando qualquer ativo falta — ou seja, um único ativo com falha eliminaria aquela data para **todos** os demais. As exclusões efetuadas pelas regras 1 e 2 são informadas na mensagem ao final da importação.
+
+### Importar do Yahoo Finance
+
+Baixe cotações pelo botão **🌐 Importar do Yahoo Finance**. Na janela que abre:
+
+- **📝 Símbolos dos Ativos:** um código por linha (ex.: `PETR4`, `VALE3`, `ITUB4`). Mínimo de 2.
+- **💰 Preço** e **🧹 Elimina após N dias sem dado:** iguais aos das outras fontes (ver regras de limpeza acima).
+- **🏷️ Tipo de ativo:** define o sufixo acrescentado automaticamente ao código.
+
+| **Tipo**                 | **Comportamento**                                                         |
+| ------------------------ | ------------------------------------------------------------------------- |
+| Ações Brasileiras (.SA)  | Acrescenta `.SA` (ex.: `PETR4` → `PETR4.SA`).                             |
+| Ações Americanas / ETFs / Criptomoedas | Usa o código como digitado (ex.: `MSFT`, `BTC-USD`).        |
+| Códigos Livres do Yahoo  | Nenhum sufixo é acrescentado — digite exatamente como aparece no Yahoo.   |
+
+- **🏛️ Ativo de Referência:** informe um benchmark (padrão `BOVA11`) e marque **Incluir**. Ele é baixado junto e vira a coluna de referência, renomeada para `Taxa_Ref_<CÓDIGO>` e posicionada como segunda coluna — é isso que faz a **detecção automática** reconhecê-la e habilitar os objetivos de excesso. Sugestões: `BOVA11` (Ibovespa), `LFTS11` (CDI), `SMAL11` (Small Caps), `IVV` (S&P 500).
+- **📅 Período:** datas de início e fim da busca (padrão: últimos 3 anos).
+
+Clique em **🚀 Buscar e Importar**. Uma barra de progresso mostra o andamento ativo a ativo.
+
+💡 Códigos que já contenham ponto (ex.: `PETR4.SA`) são usados como digitados, mesmo no modo com sufixo — não vira `PETR4.SA.SA`.
+
+⚠️ Séries com menos de 6 pregões no período são descartadas já na busca, e os símbolos sem dados são listados ao final; o que sobrar ainda passa pelas três regras de limpeza. Se o **ativo de referência** não sobreviver (não retornou ou foi excluído na limpeza), a importação continua sem ele e o programa avisa — nesse caso os objetivos que dependem da referência ficam indisponíveis.
+
+⚠️ **Requer a biblioteca `yfinance`** (`pip install yfinance`). Sem ela o aplicativo funciona normalmente, apenas esse botão exibe um aviso explicando como instalar.
+
+💡 Os dados vêm como **preços de fechamento**, exatamente o formato que o programa espera — a transformação para base zero continua sendo feita internamente ao processar o período.
+
+### Importar da B3 (COTAHIST) — fontes nacionais
+
+O botão **🇧🇷 Importar da B3 (COTAHIST)** baixa os arquivos anuais oficiais da B3 (mercado à vista) e monta a série de preços dos ativos pedidos. Por ser a fonte oficial da bolsa brasileira, é mais confiável que o Yahoo para ações e ETFs negociados na B3.
+
+A janela é parecida com a do Yahoo, com alguns campos próprios:
+
+- **📝 Símbolos:** os códigos exatamente como negociados na B3 (ex.: `PETR4`, `VALE3`, `BOVA11`).
+- **💰 Preço:** Abertura, Máximo, Mínimo ou **Fechamento** (padrão).
+- **🧹 Elimina após N dias sem dado:** regra de limpeza (padrão 10). Se um ativo ficar mais de N pregões seguidos sem cotação, é descartado; lacunas menores são preenchidas com o preço do dia anterior. Ativos sem cotação na primeira data também são descartados.
+- **🏛️ Ativo de Referência** e **📅 Período:** iguais aos do Yahoo.
+
+⚠️ O primeiro download de cada ano é **grande** (dezenas de MB) e pode levar de segundos a minutos — a janela pode parecer parada enquanto baixa cada ano. A barra de progresso avança a cada ano concluído.
+
+⚠️ Requer a biblioteca **`requests`** (normalmente já instalada). Cobre bem ações e a maioria dos ETFs; para **ETFs de renda fixa** que a B3 não cobre bem, use a fonte via Excel abaixo.
+
+### Importar via Excel (renda fixa) — fonte complementar
+
+O botão **📊 Importar via Excel (renda fixa)** usa a função `STOCKHISTORY` do Excel (dados LSEG/Refinitiv) para buscar os ETFs de renda fixa que o COTAHIST não cobre bem (ex.: `FIXA11`, `IMAB11`, `B5P211`, `IRFM11`). Os campos são os mesmos da importação da B3.
+
+⚠️ **Requisitos específicos:** Windows com **Excel 365** instalado e logado, e a biblioteca **`xlwings`** (`pip install xlwings`). É a única fonte que não roda em Linux/macOS. Sem esses requisitos, o botão abre normalmente mas a busca informa o que está faltando.
+
+💡 **Fonte complementar, não substituta:** use a B3 como fonte principal e o Excel só para os códigos de renda fixa que faltarem. Não misture as duas fontes na mesma carteira — os preços têm origens diferentes (B3 vs LSEG).
+
+### Importar Fundos da CVM
+
+O botão **🏦 Importar Fundos (CVM)** traz as **cotas diárias de fundos de investimento** a partir dos dados abertos da CVM. Permite otimizar carteiras de fundos exatamente como se faz com ações — a cota é o "preço" do fundo.
+
+Na janela:
+
+- **📝 CNPJs dos Fundos:** um CNPJ por linha, **com ou sem pontuação** (`29.152.383/0001-03` ou `29152383000103`). Mínimo de 2.
+- **📁 Pasta de cache:** onde os arquivos baixados ficam guardados. Se existir um **`CNPJ.csv`** nessa pasta, os CNPJs são carregados dele automaticamente.
+- **🧹 Elimina após N dias sem dado** e **📅 Período:** iguais às outras fontes.
+- **🏛️ Ativo de Referência:** diferente das demais — como o nome do fundo só é conhecido depois da busca, ao final aparece a **lista dos fundos obtidos** para você escolher qual será a referência. Um fundo *referenciado DI* costuma ser a melhor escolha.
+
+O que é baixado automaticamente:
+
+| **Arquivo**                    | **Origem**                                                        |
+| ------------------------------ | ----------------------------------------------------------------- |
+| Cadastro (nomes dos fundos)    | `.../FI/CAD/DADOS/cad_fi_hist.zip`                                |
+| Informe diário, 2021 em diante | `.../FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_AAAAMM.zip` (mensal)   |
+| Informe diário, antes de 2021  | `.../FI/DOC/INF_DIARIO/DADOS/HIST/inf_diario_fi_AAAA.zip` (anual) |
+
+⚠️ **Os arquivos são grandes** — cada informe diário traz todos os fundos do país. A primeira busca de um período baixa e guarda em cache; as buscas seguintes reaproveitam o que já está lá. Um zip anual do histórico traz os 12 meses de uma vez, então basta um download por ano antigo.
+
+### O cache: apagar ao sair, ou guardar?
+
+Os dois lados têm razão, e por isso **quem decide é você**. Na janela de importação, logo abaixo da pasta, existe a caixa **☑️ Apagar os arquivos baixados ao fechar o programa**:
+
+| **Caixa** | **O que acontece** | **Para quem** |
+| --------- | ------------------ | ------------- |
+| **Marcada** (padrão) | Ao fechar, os arquivos baixados são apagados. Repetir a busca depois baixa tudo de novo. | Quem usa de vez em quando e não quer centenas de megabytes parados no disco. |
+| **Desmarcada** | Os arquivos ficam guardados e são reaproveitados nas próximas aberturas. A pasta cresce com o tempo. | Quem acompanha sempre os mesmos fundos e repete as buscas — economiza um download grande a cada vez. |
+
+A escolha **fica gravada** e vale para as próximas aberturas; você só precisa decidir uma vez. Ela é guardada num `preferencias.json` ao lado do cache (um arquivo minúsculo, de texto).
+
+A limpeza, quando acontece, é **seletiva**: só saem os arquivos com cara de download da CVM (`inf_diario_fi_*.csv` e `cad_fi_hist*.csv`). Qualquer outro arquivo seu que esteja na pasta — o **`CNPJ.csv`**, por exemplo — **não é tocado**. A pasta em si só é removida se ficar vazia.
+
+| **Como você executa** | **Pasta padrão do cache** |
+| --------------------- | ------------------------- |
+| Script (`python desktop_app_qt.py`) | `<pasta do projeto>\cvm_cache` |
+| Executável (`.exe`) | `%APPDATA%\OtimizadorPortfolio\cvm_cache` |
+
+A pasta é exibida (e pode ser trocada) na própria janela de importação. **A que você escolher é lembrada** e volta nas próximas aberturas — é só apontar uma vez. Se a pasta lembrada desaparecer (pendrive removido, pasta apagada) e não puder ser recriada, o programa volta ao padrão em vez de insistir num caminho morto.
+
+💡 **A pasta é criada assim que a janela de importação abre**, mesmo antes da primeira busca. É isso que permite chegar nela pelo **Procurar...** e deixar ali o seu `CNPJ.csv`. No executável isso importa mais ainda, porque `%APPDATA%\OtimizadorPortfolio` não existe numa instalação nova.
+
+💡 Seja qual for a escolha, a base já importada pode ser salva a qualquer momento com **💾 Baixar Base de Dados Carregada** (seção 3.2.2) — um arquivo pequeno, que recarrega pelo botão de planilha e dispensa voltar à CVM.
+
+⚠️ **Por que o executável usa `%APPDATA%` e não a própria pasta:** um executável único extrai seu conteúdo para uma pasta temporária e a apaga ao fechar. Se o cache ficasse ali, guardá-lo não adiantaria nada — seria apagado de todo jeito. Em `%APPDATA%` ele persiste, e sobrevive inclusive à troca do `.exe` por uma versão nova.
+
+💡 **As colunas recebem o nome do fundo** (denominação social vigente no cadastro), que costuma ser longo. É esse nome que aparece na lista de ativos, na composição da carteira e nos gráficos.
+
+💡 O formato dos CSVs da CVM **muda conforme o ano** (nome da coluna de CNPJ, codificação, data em DD/MM/AAAA ou AAAA-MM-DD, decimal com vírgula ou ponto). Tudo isso é tratado automaticamente, e a comparação de CNPJ ignora a pontuação.
+
+## 3.2.2 Baixar a Base Carregada
+
+O botão **💾 Baixar Base de Dados Carregada** salva em disco a base **bruta** atualmente em memória — não importa a origem (planilha, Yahoo, B3, Excel ou CVM). Útil para conferir os dados, ajustá-los à mão ou guardar uma cópia da série que você montou online.
+
+- Fica **desabilitado** enquanto nenhuma base estiver carregada; habilita automaticamente após carregar/importar.
+- Escolha **.xlsx** (Excel, com datas em DD/MM/AAAA, preços numéricos, cabeçalho em negrito e primeira linha congelada) ou **.csv** (separador `;` e decimal `,`, padrão que o Excel pt-BR abre direto).
+- Grava exatamente `Data | (Taxa_Ref, se houver) | ativos...`, **sem** a transformação para base zero — ou seja, os preços originais, do jeito que o otimizador os recebe.
+
+💡 Os preços são gravados com **precisão total** (sem arredondamento), para que o arquivo seja fiel ao dado usado nos cálculos. No Excel, a exibição fica limpa (2 casas) mas o valor exato é preservado na célula.
+
+💡 Um bom uso: importe online (Yahoo/B3/Excel), baixe a base, ajuste o que precisar numa planilha e recarregue pelo botão **📂 Carregar Planilha Excel**.
+
+## 3.2.3 Alterar o Ativo de Referência
+
+O botão **🏛️ Alterar Ativo de Referência** troca a referência **sem reimportar nada**. Serve para duas situações comuns:
+
+- A detecção automática escolheu a coluna errada — ou não escolheu nenhuma.
+- Você quer comparar a mesma carteira contra **benchmarks diferentes** (CDI, Ibovespa, um fundo específico) sem baixar tudo de novo.
+
+Como funciona:
+
+1. Abre a lista de **todas as colunas da base**, com a referência atual já marcada.
+2. A referência antiga **volta a ser um ativo comum**, recuperando o nome original (o prefixo `Taxa_Ref_` só é retirado quando foi o programa que o colocou; nomes que vieram da sua planilha são preservados como estão).
+3. A nova referência é renomeada para `Taxa_Ref_<NOME>` e movida para a segunda coluna.
+4. A lista de ativos, o painel **Taxa de Referência Detectada** e os **objetivos de excesso** são atualizados na hora.
+
+Também existe a opção **Seguir sem referência**: a base fica só com ativos e os objetivos que dependem da referência somem da aba Configuração. Se algum deles estava selecionado, o programa volta sozinho para **Maximizar Sharpe Ratio** — assim não há como rodar uma otimização de excesso sem ter contra o que comparar.
+
+⚠️ **Processe o período novamente** depois de trocar. A troca mexe na base bruta; os cálculos já feitos continuam valendo para a referência antiga até você clicar em **⚡ Processar Período Selecionado**. O programa avisa isso na própria mensagem de confirmação.
+
+💡 **Por que isso é necessário e não basta a detecção automática:** ela procura palavras como `taxa`, `livre`, `risco`, `ibov`, `ref`, `cdi` e `selic` no nome da segunda coluna. Entre fundos, "ref" aparece em qualquer *REFERENCIADO DI* — e um palpite errado é pior do que nenhum. Com a troca manual, o palpite deixa de ser definitivo.
+
+⚠️ **A decisão agora é da interface, não do otimizador.** Antes, o otimizador refazia o mesmo palpite por conta própria a cada cálculo. Se a segunda coluna fosse um fundo *REFERENCIADO DI* que você quisesse como **ativo**, ele era engolido como taxa de referência e sumia da carteira — ou a otimização parava com um erro de coluna ausente. Hoje a interface informa explicitamente qual é a referência (ou que não há nenhuma), e o palpite só é usado por quem chama o otimizador direto, fora do programa.
 
 ## 3.3 Configurar Janelas Temporais
 
@@ -220,6 +406,21 @@ Detalhes da leitura:
 
 💡 Carregue os dados (aba Dados) antes de importar, pois o sistema casa os ativos do arquivo com os ativos disponíveis na planilha carregada.
 
+### O que está na aba Avançado é imperativo
+
+**Uma regra definida na aba Avançado tem de ser respeitada.** Se algum ativo com regra não estiver selecionado na aba Dados, a regra não seria aplicada — e o otimizador entregaria uma carteira diferente da pedida. Por isso, nesse caso a **otimização é recusada** com uma mensagem que lista os ativos em falta e como resolver.
+
+O sistema nunca otimiza ignorando o que você definiu ali, nem passa por cima da sua seleção na aba Dados: quando as duas se contradizem, ele para e pergunta.
+
+⚠️ **Isso não convive com o recálculo automático do ranking** (aba Ranking, seção 7.5). As duas coisas se contradizem: uma diz *"quero exatamente estes ativos com estes pesos"*, a outra diz *"escolha os ativos por mim"*. Com as duas ligadas, o ranking refaz a seleção ao otimizar, ativos com regra ficam de fora, e a otimização é recusada.
+
+✅ **Como proceder:**
+
+- **Para usar a carteira/regras do Avançado:** desmarque **🔄 Recalcular o ranking... antes de cada otimização** na aba Ranking.
+- **Para deixar o ranking escolher os ativos:** limpe as restrições individuais na aba Avançado.
+
+💡 **Por que a recusa, e não um simples aviso:** antes o programa seguia em frente, e o resultado *parecia* certo. Os ativos da carteira que o ranking mantinha conservavam o peso travado, então a composição saía parecida com a original — só faltavam os que o ranking havia descartado. Num teste com 19 ativos a 5,26% cada, 17 sobreviveram com peso idêntico e 2 sumiram sem deixar rastro. Um resultado errado com aparência de certo é pior que um erro na tela.
+
 ## 5.2 Janela de Configuração
 
 A janela exibe todos os ativos selecionados na aba Dados. Para cada ativo:
@@ -291,6 +492,27 @@ Fórmula do índice:
 
 **Índice = \[P_inc × Inclinação_norm + P_desv × (1 − Desvio_norm) + P_cor × Correlação\] ÷ (P_inc + P_desv + P_cor)**
 
+### Quando não há taxa de referência
+
+O ranking é relativo por natureza: ele mede cada ativo **contra alguma coisa**. Sem referência definida, esse papel passa a ser da **linha do zero** — a diferença "ativo − referência" vira o próprio retorno do ativo, e o índice passa a medir a qualidade da evolução dele por si só (sobe de forma consistente? em linha reta?).
+
+A **correlação deixa de existir** nesse caso (não há com o que correlacionar), então esse componente sai da conta e seu peso é redistribuído:
+
+**Índice = \[P_inc × Inclinação_norm + P_desv × (1 − Desvio_norm)\] ÷ (P_inc + P_desv)**
+
+Na tabela, a coluna Correlação aparece como **—**, e o cabeçalho informa "sem referência (medido contra a linha do zero)".
+
+### Pesos sem critério: o programa avisa
+
+Os pesos precisam distinguir alguma coisa. Duas combinações não distinguem nada, e o programa **barra com explicação** em vez de entregar um ranking sem sentido (todos os ativos empatariam em 0,5, e o filtro de Score passaria a cortar todos ou nenhum):
+
+- **Os três pesos em zero** — nenhum critério.
+- **Só a Correlação com peso, e a base sem referência** — a correlação não existe sem referência (ver acima).
+
+O aviso aparece tanto ao calcular o ranking quanto ao iniciar a Auto-Otimização.
+
+⚠️ **Corrigido na versão atual:** antes, sem referência, o programa tomava a **primeira coluna como referência de qualquer jeito**. Aquele ativo desaparecia do ranking sem aviso — e, como a Auto-Otimização escolhe os ativos pelo ranking, ele **nunca podia entrar na carteira**, em nenhum step. Se você rodou auto-otimizações sem referência em versões anteriores, vale repetir: os resultados mudam.
+
 ## 7.2 Configurar e Calcular
 
 - Marque o checkbox '🤖 Ativar ranking automático de ativos'. O painel de configuração aparecerá.
@@ -322,6 +544,37 @@ Abaixo da tabela, defina um intervalo de score para selecionar ativos automatica
 - Clique em **✅ Selecionar Ativos por Score**. O programa selecionará automaticamente na listbox da aba Dados apenas os ativos dentro do intervalo definido e navegará para a aba Configuração.
 
 💡 A seleção por score respeita as configurações de short selling e restrições individuais já definidas. Essas configurações são preservadas mesmo após a atualização da seleção de ativos.
+
+💡 A faixa de score que você digitar é **preservada** quando o ranking é recalculado. (Antes ela voltava ao padrão 0,70–1,00 a cada recálculo, apagando o critério em silêncio.)
+
+## 7.5 Recálculo Automático Antes de Otimizar
+
+Na caixa **⚙️ Configurar Pesos dos Parâmetros** existe a opção **🔄 Recalcular o ranking e reselecionar os ativos antes de cada otimização**, marcada por padrão.
+
+| Estado | Ao clicar em Otimizar |
+| ------ | --------------------- |
+| **Marcada** (padrão) | O ranking é refeito para o período processado no momento, e os ativos são reselecionados pela faixa de score. |
+| **Desmarcada** | Vale a lista que estiver selecionada na aba Dados, seja ela de qual período for (comportamento anterior). |
+
+Só tem efeito com **🤖 Ativar ranking automático de ativos** marcado. Sem isso, a otimização usa a seleção manual, como sempre.
+
+**Para que serve.** Num walk-forward feito à mão — você avança a janela um mês, processa e otimiza, repetidamente — o ranking muda a cada janela, e a seleção da janela anterior fica velha. Sem essa opção, o programa aceitava a lista antiga **sem dizer nada**: nenhum erro, nenhum aviso, e o resultado saía com cara de certo. Bastava esquecer de clicar em *Calcular Ranking* + *Selecionar Ativos por Score*.
+
+Exemplo real da diferença, movendo a janela de `01/01/23–31/12/23` para `01/02/23–31/01/24` (um único mês a mais):
+
+| Ativo | Score na 1ª janela | Score na 2ª janela |
+| ----- | ------------------ | ------------------ |
+| BOM O ANO TODO | 1,000 | 1,000 |
+| DISPARA EM JAN24 | 0,067 | 0,000 |
+| MEDIANO | 0,000 | 0,252 |
+
+Segundo e terceiro lugares trocaram de posição.
+
+Ao final da otimização, a mensagem de sucesso informa que o ranking foi recalculado e quantos ativos entraram — para você não confundir a carteira obtida com a lista que estava marcada antes.
+
+⚠️ Se a faixa de score devolver **menos de 2 ativos** naquele período, a otimização é interrompida com explicação (alargue a faixa, ou desmarque o recálculo automático). Melhor parar do que otimizar sobre uma seleção que não faz sentido.
+
+⚠️ **Não use esta opção junto com restrições individuais ou uma carteira importada na aba Avançado** (seção 5.1.1). As duas se contradizem: o Avançado fixa ativos e pesos, o recálculo escolhe os ativos por conta própria. Com as duas ligadas, o ranking substitui a seleção, ativos com regra ficam de fora e **a otimização é recusada** com a explicação e as duas saídas possíveis. Antes de carregar uma carteira, desmarque esta caixa; antes de voltar a usar o ranking, limpe as restrições individuais.
 
 # 8\. Aba Resultados - Análise do Portfólio
 
@@ -411,6 +664,12 @@ Disponível apenas quando uma taxa de referência foi detectada. Exibe a diferen
 # 10\. Aba Auto-Otimização - Walk-Forward
 
 A Auto-Otimização executa automaticamente centenas ou milhares de testes walk-forward, variando sistematicamente os parâmetros de otimização para identificar as combinações mais robustas. É a funcionalidade mais avançada do sistema.
+
+🏛️ **A referência é a mesma da aba Dados** — a detectada na importação ou a que você escolheu em **Alterar Ativo de Referência** (seção 3.2.3). Ela alimenta o ranking de cada step, a coluna **Ref%**, a Meta relativa e os objetivos de excesso. Para não restar dúvida, o cabeçalho desta aba **mostra qual referência está em uso**: em verde quando há uma, em laranja quando não há (com o aviso de que o Ref% fica em 0% e o ranking passa a medir contra a linha do zero — ver seção 7.1).
+
+🏆 **Os pesos do ranking também são os da aba Ranking** — Inclinação, Estabilidade e Correlação (seção 7.1). O que você ajustar lá é o que roda aqui, em cada step. O que a Auto-Otimização define por conta própria é apenas o **Score Min/Max**, que corta a lista já classificada.
+
+⚠️ **Corrigido na versão atual:** os três pesos ficavam **fixos em 0,33** dentro da Auto-Otimização, ignorando os controles da aba Ranking. Dava para ajustá-los, ver a ordem mudar na aba Ranking, rodar a Auto-Otimização e ela usar outra coisa — sem aviso. Como o padrão dos controles é exatamente 0,33 cada, **quem nunca os moveu obtém resultados idênticos aos de antes**; só muda para quem os ajustou.
 
 ## 10.1 Conceito de Walk-Forward
 
@@ -536,8 +795,8 @@ Para obter os melhores resultados, siga esta sequência:
 
 | **Etapa** | **Ação**                                                                         | **Aba**                |
 | --------- | -------------------------------------------------------------------------------- | ---------------------- |
-| 1         | Prepare a planilha Excel com datas, benchmark e ativos.                          | -                      |
-| 2         | Carregue o arquivo e verifique se o benchmark foi detectado corretamente.        | 📁 Dados               |
+| 1         | Prepare a planilha Excel com datas, benchmark e ativos — ou importe de uma das fontes online. | -         |
+| 2         | Verifique se o benchmark foi detectado corretamente; se não, use 🏛️ Alterar Ativo de Referência. | 📁 Dados |
 | 3         | Configure as janelas temporais (sugestão: 70% treino, 30% validação) e processe. | 📁 Dados               |
 | 4         | Selecione os ativos de interesse ou use o ranking para seleção automática.       | 📁 Dados / 🏆 Ranking  |
 | 5         | Defina o objetivo de otimização e os limites globais de peso.                    | ⚙️ Configuração        |
@@ -578,7 +837,8 @@ Para obter os melhores resultados, siga esta sequência:
 
 - O peso de correlação pode ser ajustado para zero se você não quiser que a relação com o benchmark influencie o ranking.
 - Correlações negativas podem ser desejáveis para ativos de hedge: ajuste o peso de correlação para valores negativos não é suportado diretamente, mas ativos com correlação negativa obterão scores menores, o que pode ser usado para identificá-los e inclui-los como short.
-- Recalcule o ranking sempre que mudar o período de análise, pois os parâmetros são recalculados com base nos dados do período configurado.
+- Recalcule o ranking sempre que mudar o período de análise, pois os parâmetros são recalculados com base nos dados do período configurado. A opção de recálculo automático (seção 7.5) faz isso por você.
+- **Ranking e regras do Avançado não convivem.** Se você importou uma carteira ou definiu restrições individuais na aba Avançado, desligue o recálculo automático do ranking antes de otimizar — com os dois ligados, o ranking refaz a seleção, ativos com regra ficam de fora e a otimização é recusada. Ver seções 5.1.1 e 7.5.
 
 ## 12.6 Robustez da Otimização (Multi-Start)
 

@@ -2,25 +2,53 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
+# Sentinela para "ninguém me disse qual é a referência, então descubra sozinho".
+# Diferente de None, que significa "não existe referência nenhuma".
+DETECTAR_REFERENCIA = object()
+
+# Palavras que denunciam uma coluna de referência, quando é preciso adivinhar.
+TERMOS_REFERENCIA = ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']
+
+
 class PortfolioOptimizer:
-    def __init__(self, returns_data, selected_assets=None):
+    def __init__(self, returns_data, selected_assets=None,
+                 risk_free_column=DETECTAR_REFERENCIA):
         """
         Inicializa o otimizador com dados de retorno
         returns_data: DataFrame com retornos dos ativos (base 0)
         selected_assets: Lista de ativos selecionados (None = todos)
+        risk_free_column: qual coluna é a referência. Três valores possíveis:
+            DETECTAR_REFERENCIA (padrão) -> adivinha pelo nome da 2ª coluna;
+            None                         -> não há referência, tudo é ativo;
+            '<nome da coluna>'           -> essa coluna é a referência.
+
+        A adivinhação existe por compatibilidade, mas erra em casos reais: o
+        termo 'ref' aparece em qualquer fundo *REFERENCIADO DI*, e aí um ativo
+        legítimo seria silenciosamente tratado como referência e sumiria da
+        carteira. Quem sabe a resposta (a interface sabe) deve informá-la.
         """
         self.original_data = returns_data.copy()  # Preservar dados originais com datas
-        
+
         # Assumir que primeira coluna é data, resto são ativos
         if isinstance(returns_data.columns[0], str) and 'data' in returns_data.columns[0].lower():
             self.dates = pd.to_datetime(returns_data.iloc[:, 0])  # Guardar datas
-            
-            # Verificar se segunda coluna é Taxa Livre de Risco
-            if len(returns_data.columns) > 2 and isinstance(returns_data.columns[1], str) and any(
-                term in returns_data.columns[1].lower() for term in ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']
-            ):
-                self.risk_free_returns = returns_data.iloc[:, 1].apply(pd.to_numeric, errors='coerce')  # Coluna B
-                self.returns_data = returns_data.iloc[:, 2:]  # Ativos começam na coluna C
+
+            colunas = returns_data.columns.tolist()
+            if risk_free_column is DETECTAR_REFERENCIA:
+                if len(colunas) > 2 and isinstance(colunas[1], str) and any(
+                    termo in colunas[1].lower() for termo in TERMOS_REFERENCIA
+                ):
+                    nome_ref = colunas[1]
+                else:
+                    nome_ref = None
+            else:
+                # Escolha explícita. Se a coluna não existir mais (a base pode
+                # ter mudado), segue sem referência em vez de quebrar.
+                nome_ref = risk_free_column if risk_free_column in colunas else None
+
+            if nome_ref is not None:
+                self.risk_free_returns = returns_data[nome_ref].apply(pd.to_numeric, errors='coerce')
+                self.returns_data = returns_data.drop(columns=[colunas[0], nome_ref])
                 # Calcular taxa livre de risco acumulada
                 self.risk_free_cumulative = np.cumsum(self.risk_free_returns.dropna())
                 if len(self.risk_free_cumulative) > 0:
