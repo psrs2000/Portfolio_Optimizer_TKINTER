@@ -8,6 +8,14 @@ otimização de portfólio com walk-forward e ranking automático de ativos.
 
 Versão 3.0 • 2026
 
+---
+
+### ⬇️ [Baixar o programa para Windows](https://github.com/psrs2000/Portfolio_Optimizer_TKINTER/releases/latest)
+
+Arquivo único, sem instalação e sem Python: baixe o `.exe` e dê duplo clique. Detalhes e o que esperar na primeira execução estão na **seção 1.3**. Para Linux e macOS, rode a partir do código (**seção 1.4**).
+
+---
+
 # 1\. Introdução
 
 O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com interface **PyQt5** (`desktop_app_qt.py`), apoiada no motor de cálculo `optimizer.py`. Seu objetivo é auxiliar analistas e gestores a construir carteiras de ativos financeiros de forma quantitativa, combinando técnicas de otimização matemática, análise de risco e validação fora da amostra (out-of-sample).
@@ -42,7 +50,29 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 | Resolução de tela      | Mínimo 1400 × 900 pixels (recomendado 2100+ de largura para ver a tabela da Auto-Otimização inteira) |
 | Formato de dados       | Planilha Excel (.xlsx ou .xls) e CSV         |
 
-## 1.3 Como Iniciar o Programa
+## 1.3 Baixar o Executável Pronto (Windows)
+
+Quem só quer **usar** o programa não precisa instalar Python nem baixar o código:
+
+### ⬇️ [Baixar a última versão](https://github.com/psrs2000/Portfolio_Optimizer_TKINTER/releases/latest)
+
+Na página do release, baixe o arquivo **`Otimizador de Portfolio.exe`** (cerca de 112 MB). Ele sozinho **é** o programa inteiro: não há instalador, não há pasta para descompactar, não há nada mais para instalar. Salve onde preferir e dê duplo clique.
+
+O link acima sempre aponta para a versão mais recente. [Link direto para o `.exe` da versão atual](https://github.com/psrs2000/Portfolio_Optimizer_TKINTER/releases/download/Portfolio-Optimizer/Otimizador.de.Portfolio.exe).
+
+**Três coisas normais que costumam assustar na primeira vez:**
+
+| **O que acontece** | **Por quê** |
+| ------------------ | ----------- |
+| O Windows mostra **"O Windows protegeu o seu computador"** e não abre | O executável não é assinado digitalmente (a assinatura é um certificado pago). Clique em **Mais informações** → **Executar assim mesmo**. |
+| **Demora alguns segundos** para a janela aparecer | É um executável de arquivo único: ele descompacta o próprio conteúdo a cada execução. Acontece **sempre**, não só na primeira vez. |
+| Abre **uma janela preta de console** junto com o programa | É proposital: ali sai o andamento da auto-otimização, a composição das carteiras e os avisos do solver. Se algo der errado, é essa janela que diz o quê. Não feche — fechá-la encerra o programa. |
+
+⚠️ Alguns antivírus desconfiam de executáveis gerados pelo PyInstaller, mesmo sem haver nada de errado com eles. Se o seu bloquear o arquivo, será preciso liberá-lo manualmente — ou usar o programa pelo código-fonte (seção 1.4).
+
+💡 **Windows apenas.** No Linux e no macOS, rode a partir do código-fonte, como descrito a seguir. O programa funciona nos três sistemas; só o executável pronto é específico do Windows.
+
+## 1.4 Como Iniciar o Programa (a partir do código)
 
 - Abra o terminal (Prompt de Comando ou PowerShell no Windows).
 - Navegue até a pasta onde os arquivos do projeto estão localizados.
@@ -53,7 +83,9 @@ O Otimizador de Portfólio é uma aplicação desktop desenvolvida em Python com
 
 ⚠️ Os módulos das fontes de dados (`cvm_fundos.py`, `b3_series_wide_com_limpeza.py`, `b3_excel_rendafixa.py`) também precisam estar **na mesma pasta**. Sem eles o aplicativo abre normalmente, mas o botão da fonte correspondente avisa o que está faltando.
 
-## 1.4 Gerar o Executável (Windows)
+## 1.5 Gerar o Executável (Windows)
+
+Esta seção é para quem quer **construir** o executável a partir do código — por exemplo, depois de alterar alguma coisa. Para apenas usar o programa, baixe o executável pronto (seção 1.3).
 
 Para distribuir o programa a quem não tem Python instalado, dê **duplo clique em `Construir executavel.bat`**. Ele cuida de tudo: localiza o Python, cria um ambiente isolado (`.venv`), instala as dependências e chama o PyInstaller.
 
