@@ -45,9 +45,12 @@ import json
 import math
 import os
 import re
+import threading
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from functools import partial
 
 import pandas as pd
 import requests
@@ -75,6 +78,7 @@ CABECALHOS = {
 }
 
 PAUSA = 0.25                   # segundos entre pedidos (cortesia com o servidor)
+PARALELO = 4                   # downloads simultâneos (B3 e Fundos.NET)
 TENTATIVAS = 3
 TAMANHOS_PAGINA = (120, 60, 20)  # a B3 recusa em silêncio páginas grandes demais
 
@@ -195,12 +199,24 @@ def carregar_tabela_fii(caminho_extra=None):
 #  Acesso às fontes (B3 e Fundos.NET)                                          #
 # =========================================================================== #
 class Rede:
-    """Pedidos HTTP às fontes, com novas tentativas e pausa entre pedidos."""
+    """
+    Pedidos HTTP às fontes, com novas tentativas e pausa entre pedidos.
+
+    Pode ser usada por várias linhas de execução ao mesmo tempo: cada uma
+    tem a sua própria sessão (e, no Fundos.NET, o seu próprio token).
+    """
 
     def __init__(self):
-        self.s = requests.Session()
-        self.s.headers.update(CABECALHOS)
-        self._fnet_aberto = False
+        self._local = threading.local()
+
+    @property
+    def s(self):
+        sessao = getattr(self._local, "sessao", None)
+        if sessao is None:
+            sessao = requests.Session()
+            sessao.headers.update(CABECALHOS)
+            self._local.sessao = sessao
+        return sessao
 
     def _get(self, url, **kw):
         ultimo = "sem resposta"
@@ -280,14 +296,14 @@ class Rede:
 
     # ---- Fundos.NET ----
     def _abrir_fnet(self):
-        if self._fnet_aberto:
+        if getattr(self._local, "fnet_aberto", False):
             return
         r = self._get(FNET_BASE + "abrirGerenciadorDocumentosCVM")
         m = (re.search(r'<meta[^>]+name="_csrf"[^>]+content="([^"]+)"', r.text)
              or re.search(r'content="([^"]+)"[^>]+name="_csrf"', r.text))
         if m:
             self.s.headers["CSRFToken"] = m.group(1)
-        self._fnet_aberto = True
+        self._local.fnet_aberto = True
 
     def fnet_documentos(self, cnpj, d_ini, d_fim):
         """Avisos de 'Rendimentos e Amortizações' do fundo entregues no período."""
@@ -317,6 +333,7 @@ class Rede:
         return docs
 
     def fnet_xml(self, id_doc):
+        self._abrir_fnet()
         r = self._get(FNET_BASE + f"downloadDocumento?id={id_doc}",
                       headers={"Accept": "application/xhtml+xml"})
         conteudo = r.content
@@ -686,8 +703,12 @@ def proventos_da_b3(historico, complemento, classe, isins, papel, inicio, fim, a
     return _agrupar_proventos(linhas, "B3")
 
 
-def _proventos_recentes(complemento, isins, papel, inicio, fim, vistos, avisos):
-    """Proventos dos dados complementares (últimos ~12 meses), sem repetir."""
+def _proventos_recentes(complemento, isins, papel, inicio, fim, vistos, avisos,
+                        datas_cobertas=()):
+    """
+    Proventos dos dados complementares (últimos ~12 meses), sem repetir.
+    Datas em datas_cobertas já vieram completas de outra fonte e são puladas.
+    """
     linhas = []
     for e in (complemento or {}).get("cashDividends") or []:
         if (e.get("isinCode") or "").strip().upper() not in isins:
@@ -695,6 +716,8 @@ def _proventos_recentes(complemento, isins, papel, inicio, fim, vistos, avisos):
         data_com = _data(e.get("lastDatePrior"))
         valor = _num(e.get("rate"))
         if data_com is None or not valor or valor <= 0 or not (inicio <= data_com < fim):
+            continue
+        if data_com in datas_cobertas:
             continue
         chave = (data_com, round(valor, 6))
         if vistos.get(chave, 0) > 0:
@@ -743,7 +766,11 @@ def proventos_fii(complemento, docs_fnet, ticker, isins, papel, inicio, fim, avi
             rotulo = "amortização" if x["tipo"] == "AMORTIZACAO" else "rendimento"
             linhas.append((data_com, x["valor"] / fech * 100, rotulo))
 
-    linhas += _proventos_recentes(complemento, isins, papel, inicio, fim, vistos, avisos)
+    # Data que o Fundos.NET já trouxe não é somada de novo com o valor da B3,
+    # mesmo que os dois difiram em centavos (o aviso do fundo prevalece).
+    cobertas = {d for d, _, _ in linhas}
+    linhas += _proventos_recentes(complemento, isins, papel, inicio, fim, vistos, avisos,
+                                  cobertas)
     return _agrupar_proventos(linhas, "Fundos.NET/B3" if docs_fnet else "B3")
 
 
@@ -791,6 +818,28 @@ def _dados_fnet(rede, cache, cnpj, inicio, fim, ultima_data):
     # Rendimentos são anunciados até ~40 dias antes da data-com e às vezes
     # entregues alguns dias depois dela.
     lista = rede.fnet_documentos(cnpj, inicio - timedelta(days=40), fim + timedelta(days=10))
+
+    # Só os avisos ainda não guardados são baixados — vários ao mesmo tempo.
+    pendentes = [str(i.get("id")) for i in lista
+                 if str(i.get("id")) not in conhecidos
+                 and (i.get("situacaoDocumento") or "A") == "A"]
+
+    def baixar(id_doc):
+        try:
+            return ler_xml_rendimentos(rede.fnet_xml(id_doc))
+        except ET.ParseError:
+            return []
+
+    lidos, erro = {}, None
+    if pendentes:
+        with ThreadPoolExecutor(PARALELO) as pool:
+            futuros = {pool.submit(baixar, i): i for i in pendentes}
+            for fut in as_completed(futuros):
+                try:
+                    lidos[futuros[fut]] = fut.result()
+                except FonteIndisponivel as e:
+                    erro = e
+
     novos = 0
     usados = []
     for item in lista:
@@ -798,13 +847,9 @@ def _dados_fnet(rede, cache, cnpj, inicio, fim, ultima_data):
         situacao = item.get("situacaoDocumento") or "A"
         doc = conhecidos.get(id_doc)
         if doc is None:
-            if situacao != "A":
+            if id_doc not in lidos:
                 continue
-            try:
-                eventos = ler_xml_rendimentos(rede.fnet_xml(id_doc))
-            except ET.ParseError:
-                eventos = []
-            doc = {"id": id_doc, "versao": item.get("versao") or 1, "eventos": eventos}
+            doc = {"id": id_doc, "versao": item.get("versao") or 1, "eventos": lidos[id_doc]}
             novos += 1
         doc["situacao"] = situacao
         ref = _data(item.get("dataReferencia"))
@@ -818,6 +863,11 @@ def _dados_fnet(rede, cache, cnpj, inicio, fim, ultima_data):
     nova = [ini_txt, fim_txt]
     if len(janela) == 2 and janela[0] <= fim_txt and janela[1] >= ini_txt:
         nova = [min(janela[0], ini_txt), max(janela[1], fim_txt)]
+    if erro is not None:
+        # O que foi baixado fica guardado; o período NÃO conta como coberto.
+        cache.gravar(nome, {"baixado_em": salvo.get("baixado_em"), "janela": janela,
+                            "docs": conhecidos})
+        raise erro
     cache.gravar(nome, {"baixado_em": datetime.now().isoformat(timespec="seconds"),
                         "janela": nova, "docs": conhecidos})
     return usados, novos
@@ -851,13 +901,44 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
     inicio, fim = datas.min(), datas.max()
     papeis = [c for c in saida.columns if c != "Data"]
     rel = {"inicio": inicio, "fim": fim, "proventos": proventos,
-           "papeis": {}, "falhas": {}, "baixados": 0, "do_cache": 0}
+           "papeis": {}, "falhas": {}}
 
-    cache_b3 = {}                       # empresa -> (complemento, historico)
-    for n, ticker in enumerate(papeis):
+    # 1ª fase — downloads, vários ao mesmo tempo: dados da B3 de cada empresa
+    # e, para os FIIs, os avisos do Fundos.NET. O que já está no cache volta
+    # na hora. A barra de progresso avança a cada um que termina.
+    tarefas = {}
+    for ticker in papeis:
+        empresa, _ = empresa_e_classe(ticker)
+        if not empresa:
+            continue
+        eh_fii = ticker in tabela_fii
+        if ("b3", empresa) not in tarefas:
+            tarefas[("b3", empresa)] = partial(_dados_b3, rede, cache, empresa, fim,
+                                               proventos and not eh_fii)
+        if proventos and eh_fii:
+            tarefas[("fnet", ticker)] = partial(_dados_fnet, rede, cache, tabela_fii[ticker],
+                                                inicio, fim, fim)
+    baixado = {}
+    if tarefas:
         if progress is not None:
-            progress(n, len(papeis), ticker)
-        print(f"  Eventos corporativos: {ticker}...")
+            progress(0, len(tarefas), "consultando a B3")
+        with ThreadPoolExecutor(PARALELO) as pool:
+            futuros = {pool.submit(f): chave for chave, f in tarefas.items()}
+            for n, fut in enumerate(as_completed(futuros), 1):
+                chave = futuros[fut]
+                try:
+                    baixado[chave] = fut.result()
+                except FonteIndisponivel as e:
+                    baixado[chave] = e
+                except Exception as e:       # resposta fora do formato esperado
+                    baixado[chave] = FonteIndisponivel(f"{type(e).__name__}: {e}")
+                print(f"  Eventos corporativos: {chave[1]} "
+                      f"({'falhou' if isinstance(baixado[chave], Exception) else 'ok'})")
+                if progress is not None and n < len(tarefas):
+                    progress(n, len(tarefas), chave[1])
+
+    # 2ª fase — cálculo, papel por papel (sem rede)
+    for ticker in papeis:
         avisos = []
         info = {"eventos": [], "avisos": avisos, "ret_antes": None, "ret_depois": None}
         rel["papeis"][ticker] = info
@@ -881,17 +962,12 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
         eventos = []
         complemento = historico = None
         if empresa:
-            try:
-                eh_fii = ticker in tabela_fii
-                if empresa not in cache_b3:
-                    complemento, historico, do_cache = _dados_b3(
-                        rede, cache, empresa, fim, com_historico=proventos and not eh_fii)
-                    cache_b3[empresa] = (complemento, historico)
-                    rel["do_cache" if do_cache else "baixados"] += 1
-                complemento, historico = cache_b3[empresa]
-            except FonteIndisponivel as e:
-                rel["falhas"][ticker] = f"a B3 não respondeu ({e}) — série mantida SEM ajuste"
+            resultado = baixado.get(("b3", empresa))
+            if isinstance(resultado, Exception):
+                rel["falhas"][ticker] = (f"a B3 não respondeu ({resultado}) — série "
+                                         f"mantida SEM ajuste")
                 continue
+            complemento, historico, _ = resultado
             if complemento is None:
                 avisos.append("a B3 não tem dados complementares deste código "
                               "(ETF, BDR ou papel fora de listagem?)")
@@ -906,12 +982,12 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
         if proventos and empresa:
             if ticker in tabela_fii:
                 docs = []
-                try:
-                    docs, novos = _dados_fnet(rede, cache, tabela_fii[ticker], inicio, fim, fim)
-                    rel["baixados"] += novos
-                except FonteIndisponivel as e:
-                    avisos.append(f"o Fundos.NET não respondeu ({e}): só os rendimentos "
-                                  f"dos últimos ~12 meses (B3) foram ajustados")
+                resultado = baixado.get(("fnet", ticker))
+                if isinstance(resultado, Exception):
+                    avisos.append(f"o Fundos.NET não respondeu ({resultado}): só os "
+                                  f"rendimentos dos últimos ~12 meses (B3) foram ajustados")
+                elif resultado is not None:
+                    docs = resultado[0]
                 eventos += proventos_fii(complemento, docs, ticker, isins, papel,
                                          inicio, fim, avisos)
             else:
