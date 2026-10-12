@@ -249,6 +249,9 @@ HGLG11;11728688000147
 
 **Limites conhecidos:**
 - **Direitos de subscrição** não são ajustados (dependem de cada investidor exercer ou não).
+- **Cisões** (quando o acionista recebe ações de outra empresa, como a Getnet saindo do Santander em 2021) não são ajustadas: a queda do dia "ex" fica na série, e o relatório avisa com a data.
+- **Units** (TAEE11, KLBN11, SANB11, BPAC11...) usam os eventos e proventos que a B3 registra para a própria unit — não os das ações que a compõem, que podem ter sido diferentes (em 2014 o Santander agrupou as ações, mas o preço da unit não mudou).
+- **Proventos repetidos** na mesma data-com (ex.: três linhas iguais da Klabin em dez/2025) são tratados como **parcelas** e somados: é assim que a B3 registra um provento pago em várias vezes.
 - O JCP entra pelo valor **bruto** — como fazem a B3, o Yahoo e o Excel.
 - Bonificações pequenas (ex.: 5%) que faltem na lista da B3 não são detectadas pelo COTAHIST: um salto de 5% não se distingue de um pregão comum.
 - ETFs e BDRs: os desdobramentos são tratados; proventos, quando a B3 os tiver.

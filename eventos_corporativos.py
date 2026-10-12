@@ -491,15 +491,29 @@ def _evento(data_com, fator, tipo, descricao, fonte):
             "tipo": tipo, "descricao": descricao, "fonte": fonte}
 
 
-def eventos_em_acoes(complemento, isins, avisos):
-    """Desdobramentos, grupamentos e bonificações da lista da B3."""
-    eventos = []
+def eventos_em_acoes(complemento, isins, avisos, inicio=None, fim=None):
+    """
+    Desdobramentos, grupamentos e bonificações da lista da B3.
+
+    Só valem os eventos registrados no ISIN do próprio papel. Numa unit isso
+    importa: em 2014 o Santander agrupou as ações ON e PN, mas a unit SANB11
+    foi recomposta e o preço dela não mudou — a B3 lança o grupamento só nas
+    ações, e aplicá-lo à unit criaria um salto que não existiu.
+    """
+    eventos, vistos = [], set()
+    no_periodo = lambda d: (inicio is None or d >= inicio) and (fim is None or d < fim)
     for e in (complemento or {}).get("stockDividends") or []:
         if (e.get("isinCode") or "").strip().upper() not in isins:
             continue
         data_com = _data(e.get("lastDatePrior"))
         f = _num(e.get("factor"))
         rotulo = (e.get("label") or "").strip().upper()
+        # A mesma linha repetida é erro de cadastro: aplicada duas vezes, um
+        # desdobramento de 2 viraria de 4.
+        chave = (data_com, rotulo, f)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
         if data_com is None or not f or f <= 0:
             avisos.append(f"evento '{rotulo}' com dados incompletos na B3 foi ignorado "
                           f"(fator {e.get('factor')!r}, data {e.get('lastDatePrior')!r})")
@@ -514,8 +528,16 @@ def eventos_em_acoes(complemento, isins, avisos):
             mult = f                     # fator da B3 = multiplicador direto
             desc = f"Grupamento: {_fmt_num(1 / f)} ações viraram 1"
         else:
-            avisos.append(f"{_fmt(data_com)}: evento '{rotulo}' não é ajustado "
-                          f"(só desdobramento, grupamento e bonificação)")
+            if no_periodo(data_com):
+                if rotulo.startswith("CIS"):
+                    texto = (f"data-com {_fmt(data_com)}: cisão (ações de outra empresa "
+                             f"entregues aos acionistas) NÃO é ajustada — a queda do dia "
+                             f"seguinte permanece na série")
+                else:
+                    texto = (f"data-com {_fmt(data_com)}: evento '{rotulo}' não é ajustado "
+                             f"(só desdobramento, grupamento e bonificação)")
+                if texto not in avisos:
+                    avisos.append(texto)
             continue
         eventos.append(_evento(data_com, 1.0 / mult, rotulo.lower(), desc, "B3"))
     return eventos
@@ -873,7 +895,7 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
             if complemento is None:
                 avisos.append("a B3 não tem dados complementares deste código "
                               "(ETF, BDR ou papel fora de listagem?)")
-            eventos += eventos_em_acoes(complemento, isins, avisos)
+            eventos += eventos_em_acoes(complemento, isins, avisos, inicio, fim)
         else:
             avisos.append("código fora do padrão da B3: só a detecção pelo COTAHIST foi feita")
 
