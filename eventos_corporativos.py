@@ -1075,7 +1075,9 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                     notas.setdefault(ticker, []).append(
                         f"FII fora da tabela: CNPJ {cnpj} ({nome_fundo or 'nome não informado'}) "
                         f"encontrado no Fundos.NET e conferido"
-                        + (" — guardado em fii_cnpj.csv para as próximas vezes" if gravado else ""))
+                        + (f" — guardado para as próximas vezes em: {os.path.abspath(tabela_fii_extra)}"
+                           if gravado else
+                           " — NÃO foi possível guardá-lo (pasta sem permissão de escrita?)"))
                     novas[("fnet", ticker)] = partial(_dados_fnet, rede, cache, cnpj, inicio, fim, fim)
                 else:
                     cache.gravar(f"sem_cnpj_{ticker}", {"em": datetime.now().isoformat(timespec="seconds")})
