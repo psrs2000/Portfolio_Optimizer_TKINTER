@@ -30,6 +30,8 @@ modulos_locais = [
     'b3_series_wide_com_limpeza',
     'b3_excel_rendafixa',
     'cvm_fundos',
+    'eventos_corporativos',
+    'tabela_fii_cnpj',
 ]
 
 # Dependencias que o PyInstaller nao enxerga sozinho (carregadas em tempo de

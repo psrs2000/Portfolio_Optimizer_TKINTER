@@ -81,6 +81,15 @@ except Exception as _e:
     cvmsrc, CVM_OK = None, False
     CVM_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
+# Ajuste OPCIONAL das cotações da B3 por eventos corporativos (desdobramentos,
+# proventos...). Sem o módulo, a importação da B3 segue igual, só sem a opção.
+try:
+    import eventos_corporativos as eventsrc
+    EVENTOS_OK, EVENTOS_IMPORT_ERROR = True, None
+except Exception as _e:
+    eventsrc, EVENTOS_OK = None, False
+    EVENTOS_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+
 # Sentinela equivalente ao tk.END, usado pelo adaptador de listbox
 END = "end"
 
@@ -815,6 +824,8 @@ def pasta_dados_usuario(nome_app="OtimizadorPortfolio"):
 ARQUIVO_PREFERENCIAS = "preferencias.json"
 PREF_LIMPAR_CACHE = "limpar_cache_cvm_ao_sair"
 PREF_PASTA_CACHE = "pasta_cache_cvm"
+PREF_AJUSTAR_EVENTOS = "b3_ajustar_eventos"
+PREF_AJUSTAR_PROVENTOS = "b3_ajustar_proventos"
 
 
 def _caminho_preferencias():
@@ -1296,6 +1307,65 @@ class B3ImportDialog(_PriceImportDialog):
                    "cada ano é grande (dezenas de MB) e pode levar de alguns segundos "
                    "a minutos — a janela pode parecer parada durante cada ano.")
         self.progress_label = "Baixando COTAHIST"
+        self.setMinimumSize(600, 840)
+
+    def _extra_widgets(self, layout):
+        # Ajuste por eventos corporativos: OPCIONAL e desligado de fábrica.
+        # Desmarcado, a importação é exatamente a de sempre (preços como
+        # negociados). A escolha fica gravada para as próximas vezes.
+        box = QGroupBox("🧮 Ajuste por eventos corporativos (opcional)")
+        bl = QVBoxLayout(box)
+        self.chk_eventos = QCheckBox(
+            "Ajustar desdobramentos, grupamentos e bonificações")
+        self.chk_proventos = QCheckBox(
+            "Ajustar também os proventos (dividendos, JCP, rendimentos de FII) "
+            "— retorno total")
+        self.chk_proventos.setStyleSheet("margin-left: 18px;")
+        bl.addWidget(self.chk_eventos)
+        bl.addWidget(self.chk_proventos)
+        self.hint_eventos = QLabel()
+        self.hint_eventos.setStyleSheet("color: gray;")
+        self.hint_eventos.setWordWrap(True)
+        bl.addWidget(self.hint_eventos)
+        layout.addWidget(box)
+
+        if not EVENTOS_OK:
+            self.chk_eventos.setEnabled(False)
+            self.chk_proventos.setEnabled(False)
+            self.hint_eventos.setText(
+                "Indisponível: não foi possível carregar o módulo "
+                f"'eventos_corporativos.py' ({EVENTOS_IMPORT_ERROR}).")
+            return
+
+        self.chk_eventos.setChecked(bool(ler_preferencia(PREF_AJUSTAR_EVENTOS, False)))
+        self.chk_proventos.setChecked(bool(ler_preferencia(PREF_AJUSTAR_PROVENTOS, True)))
+        self.chk_eventos.toggled.connect(self._mudou_ajuste)
+        self.chk_proventos.toggled.connect(self._mudou_ajuste)
+        self._mudou_ajuste()
+
+    def _mudou_ajuste(self, *_):
+        """Grava a escolha e atualiza a explicação."""
+        ligado = self.chk_eventos.isChecked()
+        self.chk_proventos.setEnabled(ligado)
+        gravar_preferencia(PREF_AJUSTAR_EVENTOS, ligado)
+        gravar_preferencia(PREF_AJUSTAR_PROVENTOS, self.chk_proventos.isChecked())
+        if not ligado:
+            self.hint_eventos.setText(
+                "Desmarcado: os preços vêm como foram negociados. Um desdobramento "
+                "aparece como queda (ex.: −75% num 1 para 4) e os dividendos não "
+                "entram no retorno.")
+        elif self.chk_proventos.isChecked():
+            self.hint_eventos.setText(
+                "Os preços anteriores a cada evento são recalculados, como se o "
+                "provento tivesse sido reinvestido no próprio papel; o último preço "
+                "da série continua sendo o real. Os eventos vêm da B3 (e do "
+                "Fundos.NET para FIIs) — alguns segundos por papel na primeira vez; "
+                "depois ficam guardados. Ao final, um relatório mostra tudo o que "
+                "foi ajustado.")
+        else:
+            self.hint_eventos.setText(
+                "Só os eventos em ações são corrigidos; os proventos ficam fora "
+                "(retorno de preço). Ao final, um relatório mostra o que foi ajustado.")
 
     def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
         df = b3src.baixar_periodo(d_ini, d_fim, set(simbolos),
@@ -1304,6 +1374,25 @@ class B3ImportDialog(_PriceImportDialog):
             df, simbolos, tipo_preco, d_ini, d_fim, somente_vista=b3src.SOMENTE_VISTA)
         # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
         wide, relatorio = limpar_series_precos(wide, k=k)
+
+        # Ajuste opcional, DEPOIS da limpeza: só se consultam os papéis que
+        # ficaram. Desmarcado, nada aqui é executado.
+        if EVENTOS_OK and self.chk_eventos.isChecked() and len(wide.columns) > 1:
+            self.progress_label = "Eventos corporativos"
+            try:
+                wide, rel = eventsrc.ajustar_eventos(
+                    wide, df, proventos=self.chk_proventos.isChecked(),
+                    pasta_cache=os.path.join(pasta_dados_usuario(), "cache_eventos"),
+                    tabela_fii_extra=os.path.join(pasta_dados_usuario(), "fii_cnpj.csv"),
+                    progress=progress)
+                relatorio["ajuste"] = rel
+                self.origem_desc = f"{self.origem_desc} — ajustada por eventos"
+            except Exception as e:
+                # Erro inesperado no ajuste: os dados seguem como negociados,
+                # e o usuário é avisado com destaque (nunca em silêncio).
+                relatorio["ajuste_erro"] = f"{type(e).__name__}: {e}"
+            finally:
+                self.progress_label = "Baixando COTAHIST"
         return wide, faltantes, relatorio
 
 
@@ -3241,13 +3330,65 @@ class PortfolioOptimizerGUI(QMainWindow):
                 if rel.get('regra2'):
                     msg += (f"\n🧹 Excluídos (>{rel.get('k')} dias seguidos sem dado): "
                             f"{', '.join(rel['regra2'])}")
+                if rel.get('ajuste'):
+                    msg += "\n\n" + eventsrc.resumo_curto(rel['ajuste'])
 
             if dlg.erros:
                 msg += f"\n\n⚠️ Sem dados para: {', '.join(dlg.erros)}"
             msg += "\n\n🎯 Agora configure as janelas temporais."
             messagebox.showinfo("Sucesso", msg)
+
+            # Ajuste por eventos (B3, opcional): o relatório completo, para
+            # conferir; ou o aviso, com destaque, de que o ajuste não foi feito.
+            if rel and rel.get('ajuste_erro'):
+                messagebox.showwarning(
+                    "Ajuste por eventos NÃO foi feito",
+                    "Ocorreu um erro durante o ajuste por eventos corporativos:\n\n"
+                    f"{rel['ajuste_erro']}\n\n"
+                    "Os dados foram importados SEM ajuste (preços como negociados).")
+            elif rel and rel.get('ajuste'):
+                self._mostrar_relatorio_ajuste(eventsrc.texto_relatorio(rel['ajuste']))
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao aplicar os dados importados:\n{str(e)}")
+
+    def _mostrar_relatorio_ajuste(self, texto):
+        """Janela com tudo o que o ajuste por eventos fez, papel por papel."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🧮 Ajuste por eventos corporativos — relatório")
+        dlg.resize(900, 600)
+        lay = QVBoxLayout(dlg)
+        caixa = QPlainTextEdit()
+        caixa.setReadOnly(True)
+        caixa.setLineWrapMode(QPlainTextEdit.NoWrap)
+        fonte = QFont("Consolas", 9)
+        fonte.setStyleHint(QFont.Monospace)     # colunas alinhadas em qualquer sistema
+        caixa.setFont(fonte)
+        caixa.setPlainText(texto)
+        lay.addWidget(caixa)
+        linha = QHBoxLayout()
+        b_copiar = QPushButton("📋 Copiar")
+        b_copiar.clicked.connect(lambda: QApplication.clipboard().setText(texto))
+        linha.addWidget(b_copiar)
+        b_salvar = QPushButton("💾 Salvar como .txt...")
+
+        def _salvar():
+            caminho, _ = QFileDialog.getSaveFileName(
+                dlg, "Salvar relatório", "ajuste_eventos.txt", "Texto (*.txt)")
+            if caminho:
+                try:
+                    with open(caminho, "w", encoding="utf-8") as f:
+                        f.write(texto)
+                except OSError as e:
+                    messagebox.showerror("Erro", f"Não foi possível salvar:\n{e}")
+
+        b_salvar.clicked.connect(_salvar)
+        linha.addWidget(b_salvar)
+        linha.addStretch()
+        b_ok = QPushButton("Fechar")
+        b_ok.clicked.connect(dlg.accept)
+        linha.addWidget(b_ok)
+        lay.addLayout(linha)
+        dlg.exec_()
 
     def _atualizar_rotulo_ref_auto(self):
         """

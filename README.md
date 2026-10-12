@@ -81,7 +81,7 @@ O link acima sempre aponta para a versão mais recente. [Link direto para o `.ex
 
 💡 O arquivo `optimizer.py` precisa estar na mesma pasta que `desktop_app_qt.py` para o programa funcionar corretamente.
 
-⚠️ Os módulos das fontes de dados (`cvm_fundos.py`, `b3_series_wide_com_limpeza.py`, `b3_excel_rendafixa.py`) também precisam estar **na mesma pasta**. Sem eles o aplicativo abre normalmente, mas o botão da fonte correspondente avisa o que está faltando.
+⚠️ Os módulos das fontes de dados (`cvm_fundos.py`, `b3_series_wide_com_limpeza.py`, `b3_excel_rendafixa.py`, `eventos_corporativos.py`, `tabela_fii_cnpj.py`) também precisam estar **na mesma pasta**. Sem eles o aplicativo abre normalmente, mas o botão (ou a opção) correspondente avisa o que está faltando.
 
 ## 1.5 Gerar o Executável (Windows)
 
@@ -212,6 +212,50 @@ A janela é parecida com a do Yahoo, com alguns campos próprios:
 ⚠️ O primeiro download de cada ano é **grande** (dezenas de MB) e pode levar de segundos a minutos — a janela pode parecer parada enquanto baixa cada ano. A barra de progresso avança a cada ano concluído.
 
 ⚠️ Requer a biblioteca **`requests`** (normalmente já instalada). Cobre bem ações e a maioria dos ETFs; para **ETFs de renda fixa** que a B3 não cobre bem, use a fonte via Excel abaixo.
+
+#### 🧮 Ajuste por eventos corporativos (opcional)
+
+O COTAHIST traz os preços **como foram negociados**. Num desdobramento de 1 para 4 o preço cai a um quarto de um dia para o outro; num dividendo, cai o valor pago. Para o otimizador, as duas coisas parecem perdas — e não são. Na janela da B3, o quadro **🧮 Ajuste por eventos corporativos** corrige isso:
+
+- **Ajustar desdobramentos, grupamentos e bonificações** — tira da série os saltos falsos (retorno de preço).
+- **Ajustar também os proventos (dividendos, JCP, rendimentos de FII)** — soma ao retorno o que foi pago, como se fosse reinvestido no próprio papel (**retorno total**). Só fica disponível com a primeira marcada.
+
+**Desmarcado (o padrão de fábrica), a importação é exatamente a de sempre.** A escolha fica gravada para as próximas vezes.
+
+**Como o ajuste é feito.** Para cada evento com data-com D, todos os preços até D (inclusive) são multiplicados por um fator; os preços depois de D não mudam — **o último preço da série continua sendo o real**. No desdobramento de 1 para 4 o fator é 0,25; num dividendo de 2% do preço, 0,98.
+
+**De onde vêm os eventos:**
+
+| Evento | Fonte |
+|---|---|
+| Desdobramentos, grupamentos e bonificações | Lista oficial da B3 (desde os anos 90) |
+| Desdobramentos que faltam na lista da B3 | O próprio COTAHIST (ver abaixo) |
+| Dividendos, JCP, restituições de capital (ações) | Histórico de proventos da B3 (desde 1996), já com o percentual sobre o preço da data-com |
+| Rendimentos e amortizações de FIIs | Fundos.NET (avisos publicados pelos próprios fundos) + B3 (últimos ~12 meses) |
+| Ações antigas cotadas por lote de mil | Campo FATCOT do COTAHIST: tudo vira preço por ação |
+
+**Desdobramentos ausentes na lista da B3.** Acontece (os da Magazine Luiza em 2017 e 2019 não estão lá). O programa os encontra no COTAHIST quando três marcas aparecem no mesmo pregão: o número de distribuição muda (a B3 o muda exatamente no dia "ex"), a cotação salta x vezes (x = 2, 3, 4, 8, 10...) e a quantidade negociada passa a ser cerca de x vezes a de antes. Um tombo de mercado derruba o preço mas não multiplica a quantidade, e por isso não é confundido com desdobramento.
+
+**O relatório.** Ao final da importação abre-se uma janela com tudo o que foi ajustado, papel por papel: cada evento com data-com, descrição, fator e fonte, e o retorno do período **sem** e **com** ajuste. Dá para copiar ou salvar como `.txt`. Ela também mostra os **avisos** — por exemplo, um salto grande que não pôde ser explicado por nenhum evento ("confira se há evento faltando"). **Se a B3 não responder para algum papel, ele fica SEM ajuste e aparece em destaque** — nunca é ajustado pela metade em silêncio.
+
+**Tempo de download.** São consultas pequenas: alguns segundos por papel na primeira vez (para FIIs, um pouco mais: um aviso por mês do período). Tudo fica guardado na pasta `cache_eventos`, dentro da pasta de dados do programa (no executável, `%APPDATA%\OtimizadorPortfolio`), e nas buscas seguintes só se baixa o que for novo. São arquivos pequenos e não são apagados ao fechar.
+
+**FIIs e a tabela de CNPJs.** A B3 só guarda os rendimentos de FII dos últimos ~12 meses; os anteriores vêm do Fundos.NET, que é organizado por **CNPJ do fundo**. O programa já traz uma tabela com cerca de 440 FIIs (`tabela_fii_cnpj.py`). Se um FII não estiver nela, o relatório avisa que só os últimos 12 meses foram ajustados. Para incluí-lo sem esperar uma versão nova, crie o arquivo **`fii_cnpj.csv`** na pasta de dados do programa, com uma linha por fundo:
+
+```
+codigo;cnpj
+HGLG11;11728688000147
+```
+
+**Limites conhecidos:**
+- **Direitos de subscrição** não são ajustados (dependem de cada investidor exercer ou não).
+- O JCP entra pelo valor **bruto** — como fazem a B3, o Yahoo e o Excel.
+- Bonificações pequenas (ex.: 5%) que faltem na lista da B3 não são detectadas pelo COTAHIST: um salto de 5% não se distingue de um pregão comum.
+- ETFs e BDRs: os desdobramentos são tratados; proventos, quando a B3 os tiver.
+
+**Comparação com o Excel (STOCKHISTORY).** O Excel ajusta corretamente desdobramentos, grupamentos e bonificações, mas **só ajusta proventos de 2024 em diante** (e ainda deixa passar alguns). De 2020 a 2026, isso deixa de fora cerca de 48 pontos percentuais do retorno de BBAS3 e de VIVT3. Com os proventos marcados, a importação da B3 dá o retorno total completo; nos desdobramentos, o resultado coincide com o do Excel.
+
+💡 Para conferir a conexão com a B3 fora do programa: `python eventos_corporativos.py PETR4 HGLG11` lista os eventos que a B3 devolve para esses papéis.
 
 ### Importar via Excel (renda fixa) — fonte complementar
 
@@ -844,7 +888,7 @@ Para obter os melhores resultados, siga esta sequência:
 
 - Certifique-se de que não há datas duplicadas na planilha.
 - Ativos com dados faltantes no início do período serão automaticamente removidos. Se um ativo começou a ser negociado depois dos demais, inclua-o a partir de sua primeira data disponível ou remova-o da planilha.
-- Utilize sempre preços de fechamento (ou cotas) ajustados por proventos para evitar distorções nos retornos calculados.
+- Utilize sempre preços de fechamento (ou cotas) ajustados por proventos para evitar distorções nos retornos calculados. Na importação da B3, marque o **🧮 Ajuste por eventos corporativos** (seção 3.2.1).
 - Nomeie as colunas dos ativos com identificadores claros (ex.: ticker da bolsa) para facilitar a interpretação dos resultados.
 
 ## 12.2 Seleção de Janelas Temporais
