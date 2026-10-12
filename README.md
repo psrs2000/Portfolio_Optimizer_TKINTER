@@ -240,7 +240,15 @@ O COTAHIST traz os preços **como foram negociados**. Num desdobramento de 1 par
 
 **Tempo de download.** São consultas pequenas: alguns segundos por papel na primeira vez (para FIIs, um pouco mais: um aviso por mês do período). Tudo fica guardado na pasta `cache_eventos`, dentro da pasta de dados do programa (no executável, `%APPDATA%\OtimizadorPortfolio`), e nas buscas seguintes só se baixa o que for novo. São arquivos pequenos e não são apagados ao fechar.
 
-**FIIs e a tabela de CNPJs.** A B3 só guarda os rendimentos de FII dos últimos ~12 meses; os anteriores vêm do Fundos.NET, que é organizado por **CNPJ do fundo**. O programa já traz uma tabela com cerca de 440 FIIs (`tabela_fii_cnpj.py`). Se um FII não estiver nela, o relatório avisa que só os últimos 12 meses foram ajustados. Para incluí-lo sem esperar uma versão nova, crie o arquivo **`fii_cnpj.csv`** na pasta de dados do programa, com uma linha por fundo:
+**FIIs e a tabela de CNPJs — mantida pelo próprio programa.** A B3 só guarda os rendimentos de FII dos últimos ~12 meses; os anteriores vêm do Fundos.NET, que é organizado por **CNPJ do fundo**. O programa já traz uma tabela com cerca de 440 FIIs (`tabela_fii_cnpj.py`). Quando aparece um FII que **não está nela**, o programa:
+
+1. procura, na lista de avisos de rendimento recentes de todos os FIIs no Fundos.NET, os do fundo com o mesmo nome de pregão da B3;
+2. baixa um desses avisos e **confere** que ele cita o código (ou o ISIN) do papel — um nome parecido nunca basta;
+3. usa o CNPJ do aviso e o **guarda** no arquivo `fii_cnpj.csv`, na pasta de dados do programa. Nas importações seguintes ele já está lá.
+
+O relatório mostra quando isso acontece ("ℹ️ FII fora da tabela: CNPJ ... encontrado no Fundos.NET e conferido"). Se o fundo não for achado (por exemplo, não distribuiu rendimentos nos últimos 5 meses), o relatório avisa que só os últimos 12 meses foram ajustados, e o programa tenta de novo depois de 30 dias. Por que não a CVM ou sites de terceiros: o cadastro de FII da CVM tem o código de negociação mal preenchido, e sites como o Clube FII podem mudar ou bloquear o acesso sem aviso; o Fundos.NET é a fonte oficial e é de onde o histórico vem de qualquer forma.
+
+Também é possível incluir um fundo à mão no mesmo `fii_cnpj.csv` (uma linha por fundo; ele tem prioridade sobre a tabela):
 
 ```
 codigo;cnpj
@@ -258,7 +266,7 @@ HGLG11;11728688000147
 
 **Comparação com o Excel (STOCKHISTORY).** O Excel ajusta corretamente desdobramentos, grupamentos e bonificações, mas **só ajusta proventos de 2024 em diante** (e ainda deixa passar alguns). De 2020 a 2026, isso deixa de fora cerca de 48 pontos percentuais do retorno de BBAS3 e de VIVT3. Com os proventos marcados, a importação da B3 dá o retorno total completo; nos desdobramentos, o resultado coincide com o do Excel.
 
-💡 Para conferir a conexão com a B3 fora do programa: `python eventos_corporativos.py PETR4 HGLG11` lista os eventos que a B3 devolve para esses papéis.
+💡 Para conferir a conexão com a B3 fora do programa: `python eventos_corporativos.py PETR4 HGLG11` lista os eventos que a B3 devolve para esses papéis. Com `--descobrir`, os FIIs têm o CNPJ procurado no Fundos.NET como se não estivessem na tabela.
 
 ### Importar via Excel (renda fixa) — fonte complementar
 

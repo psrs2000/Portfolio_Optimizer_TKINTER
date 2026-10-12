@@ -6,11 +6,11 @@ só guarda os dos últimos ~12 meses). Foi montada a partir dos próprios avisos
 de rendimento publicados no Fundos.NET entre out/2025 e out/2026: o aviso
 traz o CNPJ do fundo e o código da cota na bolsa.
 
-FUNDO FALTANDO? Há dois caminhos:
-  - acrescentar uma linha aqui (vale para todos, na próxima versão);
-  - ou criar o arquivo fii_cnpj.csv na pasta de dados do programa, com as
-    colunas  codigo;cnpj  (ex.:  HGLG11;11728688000147). Ele é lido a cada
-    importação e tem prioridade sobre esta tabela.
+FUNDO FALTANDO? O próprio programa resolve: procura o CNPJ no Fundos.NET,
+confere e o guarda no arquivo fii_cnpj.csv da pasta de dados do programa
+(colunas  codigo;cnpj), lido a cada importação e com prioridade sobre esta
+tabela. Acrescentar a linha aqui faz o fundo valer para todos, na próxima
+versão, sem precisar dessa busca.
 """
 
 TABELA = {
