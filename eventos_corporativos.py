@@ -655,6 +655,10 @@ def proventos_da_b3(historico, complemento, classe, isins, papel, inicio, fim, a
     if rejeitadas and not conferir_classe:
         avisos.append(f"{rejeitadas} provento(s) da B3 ignorado(s): o preço informado "
                       f"pela B3 na data-com não confere com o COTAHIST")
+    elif rejeitadas and conferir_classe and not linhas:
+        avisos.append(f"o histórico da B3 não separa os proventos da classe "
+                      f"{classe or 'deste papel'} e nenhum deles confere com a cotação "
+                      f"— proventos do período NÃO ajustados")
 
     linhas += _proventos_recentes(complemento, isins, papel, inicio, fim, vistos, avisos)
     return _agrupar_proventos(linhas, "B3")
@@ -1006,7 +1010,26 @@ if __name__ == "__main__":
                   f"data-com {e.get('lastDatePrior')}  ISIN {e.get('isinCode')}")
         print(f"  proventos recentes (dados complementares): {len(comp['cashDividends'])}")
         if t in TABELA_FII_PRONTA:
-            print(f"  FII: CNPJ {TABELA_FII_PRONTA[t][0]} (histórico vem do Fundos.NET)")
+            cnpj = TABELA_FII_PRONTA[t][0]
+            print(f"  FII: CNPJ {cnpj} — consultando o Fundos.NET (últimos 12 meses)...")
+            hoje = pd.Timestamp.today().normalize()
+            try:
+                docs = rede.fnet_documentos(cnpj, hoje - timedelta(days=365), hoje)
+            except FonteIndisponivel as e:
+                print(f"  Fundos.NET não respondeu: {e}")
+                continue
+            ativos = [d for d in docs if (d.get("situacaoDocumento") or "A") == "A"]
+            print(f"  avisos de rendimento encontrados: {len(docs)} ({len(ativos)} ativos)")
+            for d in ativos[:3]:
+                try:
+                    evs = ler_xml_rendimentos(rede.fnet_xml(d.get("id")))
+                except Exception as e:
+                    print(f"    aviso {d.get('id')}: não foi possível ler ({type(e).__name__})")
+                    continue
+                for x in evs:
+                    if x["codigo"] == t:
+                        print(f"    data-com {x['data_com']}  R$ {x['valor']:.4f} por cota "
+                              f"({x['tipo'].lower()})")
         else:
             hist = rede.proventos(comp["tradingName"])
             datas = [_data(l.get("lastDatePriorEx")) for l in hist]
@@ -1014,5 +1037,19 @@ if __name__ == "__main__":
             if datas:
                 print(f"  histórico de proventos: {len(hist)} linhas, de "
                       f"{_fmt(min(datas))} a {_fmt(max(datas))}")
+                classes = {}
+                for l in hist:
+                    c = l.get("typeStock") or "?"
+                    classes[c] = classes.get(c, 0) + 1
+                print("  classes no histórico: "
+                      + ", ".join(f"{c}={n}" for c, n in sorted(classes.items())))
+                if classe and classe not in classes:
+                    print(f"  ⚠️ a classe {classe} não aparece: só entram os proventos "
+                          f"cujo preço confere com a cotação do papel")
+                recentes = [l for l in hist if l.get("typeStock") == classe][:3]
+                for l in recentes:
+                    print(f"    data-com {l.get('lastDatePriorEx')}  {l.get('corporateAction'):<16}"
+                          f" R$ {l.get('valueCash')}  fechamento R$ "
+                          f"{l.get('closingPricePriorExDate')}  ({l.get('corporateActionPrice')}%)")
             else:
                 print("  histórico de proventos: vazio")
