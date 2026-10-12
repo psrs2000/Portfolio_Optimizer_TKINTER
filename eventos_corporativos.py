@@ -48,7 +48,7 @@ import re
 import threading
 import time
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta
 from functools import partial
 
@@ -78,7 +78,10 @@ CABECALHOS = {
 }
 
 PAUSA = 0.25                   # segundos entre pedidos (cortesia com o servidor)
-PARALELO = 4                   # downloads simultâneos (B3 e Fundos.NET)
+PARALELO = 4                   # consultas simultâneas (uma por empresa/fundo)
+PARALELO_FNET = 6              # avisos do Fundos.NET baixados ao mesmo tempo (no total)
+TEMPO_LIMITE = (10, 30)        # segundos: para conectar / para receber a resposta
+LENTO = 5.0                    # resposta acima disto é registrada no console
 TENTATIVAS = 3
 TAMANHOS_PAGINA = (120, 60, 20)  # a B3 recusa em silêncio páginas grandes demais
 
@@ -203,11 +206,30 @@ class Rede:
     Pedidos HTTP às fontes, com novas tentativas e pausa entre pedidos.
 
     Pode ser usada por várias linhas de execução ao mesmo tempo: cada uma
-    tem a sua própria sessão (e, no Fundos.NET, o seu próprio token).
+    tem a sua própria sessão. A página inicial do Fundos.NET é aberta uma
+    vez só, e os cookies dela são repassados às demais sessões. Os avisos do
+    Fundos.NET são baixados por um grupo FIXO de linhas de execução, que
+    reaproveitam a conexão de um aviso para o outro.
     """
 
     def __init__(self):
         self._local = threading.local()
+        self._trava = threading.Lock()
+        self._fnet_cookies = None
+        self._fnet_cabecalhos = {}
+        self._pool = None
+
+    def pool(self):
+        """Linhas de execução para os downloads do Fundos.NET (criadas uma vez)."""
+        with self._trava:
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(PARALELO_FNET, thread_name_prefix="fnet")
+            return self._pool
+
+    def fechar(self):
+        if self._pool is not None:
+            self._pool.shutdown(wait=False)
+            self._pool = None
 
     @property
     def s(self):
@@ -220,16 +242,23 @@ class Rede:
 
     def _get(self, url, **kw):
         ultimo = "sem resposta"
+        site = "Fundos.NET" if url.startswith(FNET_BASE) else "B3"
         for tentativa in range(TENTATIVAS):
+            t0 = time.time()
             try:
-                r = self.s.get(url, timeout=40, **kw)
+                r = self.s.get(url, timeout=TEMPO_LIMITE, **kw)
+                demora = time.time() - t0
+                if demora > LENTO:
+                    print(f"  [lento] {site} levou {demora:.0f} s para responder")
                 if r.status_code == 200:
                     time.sleep(PAUSA)
                     return r
                 ultimo = f"HTTP {r.status_code}"
             except requests.RequestException as e:
                 ultimo = f"{type(e).__name__}: {e}"
-            time.sleep(1.5 * (tentativa + 1))
+            if tentativa < TENTATIVAS - 1:
+                print(f"  [nova tentativa {tentativa + 2}/{TENTATIVAS}] {site}: {ultimo}")
+                time.sleep(1.5 * (tentativa + 1))
         raise FonteIndisponivel(ultimo)
 
     def _json(self, url, **kw):
@@ -298,11 +327,15 @@ class Rede:
     def _abrir_fnet(self):
         if getattr(self._local, "fnet_aberto", False):
             return
-        r = self._get(FNET_BASE + "abrirGerenciadorDocumentosCVM")
-        m = (re.search(r'<meta[^>]+name="_csrf"[^>]+content="([^"]+)"', r.text)
-             or re.search(r'content="([^"]+)"[^>]+name="_csrf"', r.text))
-        if m:
-            self.s.headers["CSRFToken"] = m.group(1)
+        with self._trava:
+            if self._fnet_cookies is None:
+                r = self._get(FNET_BASE + "abrirGerenciadorDocumentosCVM")
+                m = (re.search(r'<meta[^>]+name="_csrf"[^>]+content="([^"]+)"', r.text)
+                     or re.search(r'content="([^"]+)"[^>]+name="_csrf"', r.text))
+                self._fnet_cabecalhos = {"CSRFToken": m.group(1)} if m else {}
+                self._fnet_cookies = self.s.cookies.get_dict()
+        self.s.cookies.update(self._fnet_cookies)
+        self.s.headers.update(self._fnet_cabecalhos)
         self._local.fnet_aberto = True
 
     def fnet_documentos(self, cnpj, d_ini, d_fim, limite=2000):
@@ -876,7 +909,7 @@ def _dados_b3(rede, cache, empresa, ultima_data, com_historico):
     return complemento, historico, False
 
 
-def _dados_fnet(rede, cache, cnpj, inicio, fim, ultima_data):
+def _dados_fnet(rede, cache, cnpj, inicio, fim, ultima_data, andamento=None, chave=None):
     """
     Avisos de rendimento do FII no período. Cada aviso é baixado UMA vez e
     fica no cache; nas próximas buscas só se baixam os avisos novos.
@@ -911,14 +944,28 @@ def _dados_fnet(rede, cache, cnpj, inicio, fim, ultima_data):
             return []
 
     lidos, erro = {}, None
+    if andamento is not None:
+        andamento[chave] = [0, len(pendentes)]
     if pendentes:
-        with ThreadPoolExecutor(PARALELO) as pool:
+        t0 = time.time()
+        proprio = None if hasattr(rede, "pool") else ThreadPoolExecutor(PARALELO)
+        pool = rede.pool() if proprio is None else proprio
+        try:
             futuros = {pool.submit(baixar, i): i for i in pendentes}
             for fut in as_completed(futuros):
                 try:
                     lidos[futuros[fut]] = fut.result()
                 except FonteIndisponivel as e:
                     erro = e
+                if andamento is not None:
+                    andamento[chave][0] += 1
+        finally:
+            if proprio is not None:
+                proprio.shutdown(wait=True)
+        demora = time.time() - t0
+        rotulo = chave[1] if chave else cnpj
+        print(f"  Fundos.NET {rotulo}: {len(pendentes)} avisos novos em {demora:.0f} s "
+              f"({demora / len(pendentes):.1f} s cada, {PARALELO_FNET} ao mesmo tempo)")
 
     novos = 0
     usados = []
@@ -964,27 +1011,58 @@ def _isins_do_papel(bruto, ticker):
     return {str(i).strip().upper() for i in sub.unique() if str(i).strip() not in ("", "nan")}
 
 
-def _executar(tarefas, progress, rotulo):
-    """Roda os downloads em paralelo; falha de um não derruba os outros."""
+def _texto_espera(pendentes, futuros, andamento):
+    """'aguardando HGLG11 12/37 avisos, PETR' — o que está em curso agora."""
+    itens = []
+    for fut in pendentes:
+        chave = futuros[fut]
+        feito = (andamento or {}).get(chave)
+        if feito and feito[1]:
+            itens.append(f"{chave[1]} {feito[0]}/{feito[1]} avisos")
+        elif fut.running():
+            itens.append(chave[1])
+    if not itens:
+        return "..."
+    itens.sort()
+    return "aguardando " + ", ".join(itens[:4]) + (" ..." if len(itens) > 4 else "")
+
+
+def _executar(tarefas, progress, rotulo, andamento=None):
+    """
+    Roda os downloads em paralelo; falha de um não derruba os outros.
+
+    Enquanto espera, devolve o controle à janela a cada ~0,3 s (pela função
+    de progresso), dizendo o que ainda está pendente — antes ela ficava
+    congelada no último papel CONCLUÍDO, o que parecia demora nele.
+    """
     resultado = {}
     if not tarefas:
         return resultado
+    total = len(tarefas)
     if progress is not None:
-        progress(0, len(tarefas), rotulo)
-    with ThreadPoolExecutor(PARALELO) as pool:
+        progress(0, total, rotulo)
+    pool = ThreadPoolExecutor(PARALELO)
+    try:
         futuros = {pool.submit(f): chave for chave, f in tarefas.items()}
-        for n, fut in enumerate(as_completed(futuros), 1):
-            chave = futuros[fut]
-            try:
-                resultado[chave] = fut.result()
-            except FonteIndisponivel as e:
-                resultado[chave] = e
-            except Exception as e:           # resposta fora do formato esperado
-                resultado[chave] = FonteIndisponivel(f"{type(e).__name__}: {e}")
-            print(f"  Eventos corporativos: {chave[1]} "
-                  f"({'falhou' if isinstance(resultado[chave], Exception) else 'ok'})")
-            if progress is not None and n < len(tarefas):
-                progress(n, len(tarefas), chave[1])
+        pendentes, feitos = set(futuros), 0
+        while pendentes:
+            prontos, pendentes = wait(pendentes, timeout=0.3, return_when=FIRST_COMPLETED)
+            for fut in prontos:
+                chave = futuros[fut]
+                feitos += 1
+                try:
+                    resultado[chave] = fut.result()
+                except FonteIndisponivel as e:
+                    resultado[chave] = e
+                except Exception as e:       # resposta fora do formato esperado
+                    resultado[chave] = FonteIndisponivel(f"{type(e).__name__}: {e}")
+                print(f"  Eventos corporativos: {chave[1]} "
+                      f"({'falhou' if isinstance(resultado[chave], Exception) else 'ok'})")
+            if progress is not None and pendentes:
+                progress(min(feitos, total - 1), total,
+                         _texto_espera(pendentes, futuros, andamento))
+    finally:
+        pool.shutdown(wait=True)
     return resultado
 
 
@@ -1015,6 +1093,8 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
     rel = {"inicio": inicio, "fim": fim, "proventos": proventos,
            "papeis": {}, "falhas": {}}
 
+    andamento = {}                     # FII -> [avisos baixados, avisos a baixar]
+
     # 1ª fase — downloads, vários ao mesmo tempo: dados da B3 de cada empresa
     # e, para os FIIs, os avisos do Fundos.NET. O que já está no cache volta
     # na hora. A barra de progresso avança a cada um que termina.
@@ -1029,8 +1109,9 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                                                proventos and not eh_fii)
         if proventos and eh_fii:
             tarefas[("fnet", ticker)] = partial(_dados_fnet, rede, cache, tabela_fii[ticker],
-                                                inicio, fim, fim)
-    baixado = _executar(tarefas, progress, "consultando a B3")
+                                                inicio, fim, fim, andamento, ("fnet", ticker))
+    t0 = time.time()
+    baixado = _executar(tarefas, progress, "consultando a B3", andamento)
     notas = {}                         # informações (não são problemas)
 
     # 1ª fase (b) — FII que não está na tabela de CNPJs: o programa procura o
@@ -1078,10 +1159,14 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                         + (f" — guardado para as próximas vezes em: {os.path.abspath(tabela_fii_extra)}"
                            if gravado else
                            " — NÃO foi possível guardá-lo (pasta sem permissão de escrita?)"))
-                    novas[("fnet", ticker)] = partial(_dados_fnet, rede, cache, cnpj, inicio, fim, fim)
+                    novas[("fnet", ticker)] = partial(_dados_fnet, rede, cache, cnpj, inicio, fim,
+                                                      fim, andamento, ("fnet", ticker))
                 else:
                     cache.gravar(f"sem_cnpj_{ticker}", {"em": datetime.now().isoformat(timespec="seconds")})
-            baixado.update(_executar(novas, progress, "Fundos.NET"))
+            baixado.update(_executar(novas, progress, "Fundos.NET", andamento))
+    if hasattr(rede, "fechar"):
+        rede.fechar()
+    print(f"  Eventos corporativos: consultas concluídas em {time.time() - t0:.0f} s")
 
     # 2ª fase — cálculo, papel por papel (sem rede)
     for ticker in papeis:
