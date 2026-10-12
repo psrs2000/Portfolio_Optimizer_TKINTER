@@ -1153,7 +1153,12 @@ class _PriceImportDialog(QDialog):
 
     # ---- fluxo comum ----
     def _fetch(self):
-        simbolos = [s.strip().upper() for s in self.symbols_edit.toPlainText().split('\n') if s.strip()]
+        digitados = [s.strip().upper() for s in self.symbols_edit.toPlainText().split('\n') if s.strip()]
+        # Código repetido vira coluna repetida, e a limpeza das séries quebrava
+        # ("The truth value of a Series is ambiguous"). Fica uma vez só, e o
+        # usuário é avisado na mensagem final.
+        simbolos = list(dict.fromkeys(digitados))
+        self.repetidos = sorted({s for s in digitados if digitados.count(s) > 1})
         if len(simbolos) < 2:
             messagebox.showerror("Erro", "Digite pelo menos 2 símbolos.")
             return
@@ -3335,6 +3340,9 @@ class PortfolioOptimizerGUI(QMainWindow):
 
             if dlg.erros:
                 msg += f"\n\n⚠️ Sem dados para: {', '.join(dlg.erros)}"
+            if getattr(dlg, 'repetidos', None):
+                msg += (f"\n\nℹ️ Repetidos na lista (considerados uma vez só): "
+                        f"{', '.join(dlg.repetidos)}")
             msg += "\n\n🎯 Agora configure as janelas temporais."
             messagebox.showinfo("Sucesso", msg)
 
