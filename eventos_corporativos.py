@@ -248,10 +248,11 @@ class Rede:
     def _get(self, url, **kw):
         ultimo = "sem resposta"
         site = "Fundos.NET" if url.startswith(FNET_BASE) else "B3"
+        limite_tempo = kw.pop("timeout", TEMPO_LIMITE)
         for tentativa in range(TENTATIVAS):
             t0 = time.time()
             try:
-                r = self.s.get(url, timeout=TEMPO_LIMITE, **kw)
+                r = self.s.get(url, timeout=limite_tempo, **kw)
                 demora = time.time() - t0
                 if demora > LENTO:
                     print(f"  [lento] {site} levou {demora:.0f} s para responder")
@@ -354,7 +355,7 @@ class Rede:
         self.s.headers.update(self._fnet_cabecalhos)
         self._local.fnet_aberto = True
 
-    def fnet_documentos(self, cnpj, d_ini, d_fim, limite=2000):
+    def fnet_documentos(self, cnpj, d_ini, d_fim, limite=2000, tipos=TIPOS_FNET):
         """
         Avisos de 'Rendimentos e Amortizações' entregues no período: do fundo
         com esse CNPJ, ou de TODOS os FIIs, Fiagro e FIDC se cnpj for None.
@@ -364,7 +365,7 @@ class Rede:
         """
         if cnpj is None:
             docs = []
-            for tipo in TIPOS_FNET:
+            for tipo in tipos:
                 docs += self._fnet_buscar(None, tipo, d_ini, d_fim, limite)
             return docs
         conhecido = self._tipo_fnet.get(cnpj)
@@ -388,8 +389,10 @@ class Rede:
                       "_": str(int(time.time() * 1000))}
             if cnpj:
                 params["cnpj"] = params["cnpjFundo"] = cnpj
+            # A lista do Fundos.NET às vezes demora bem mais que os avisos.
             d = self._json(FNET_BASE + "pesquisarGerenciadorDocumentosDados",
-                           params=params, headers={"X-Requested-With": "XMLHttpRequest"})
+                           params=params, headers={"X-Requested-With": "XMLHttpRequest"},
+                           timeout=(10, 60))
             pagina = (d.get("data") if isinstance(d, dict) else None) or []
             if total is None and isinstance(d, dict):
                 total = d.get("recordsTotal")
@@ -487,12 +490,25 @@ def _nome_normal(txt):
     return re.sub(r"\s+", " ", (txt or "").replace("/", "")).strip().upper()
 
 
+PREFIXOS_FNET = {"FIAGRO": "11", "FIDC": "2", "FII": "1"}
+
+
+def tipo_fnet_pelo_nome(nome_pregao):
+    """Tipo de fundo do Fundos.NET pelo nome de pregão da B3 ('FIAGRO RIZA' -> '11')."""
+    return PREFIXOS_FNET.get(_nome_normal(nome_pregao).split(" ")[0], "1")
+
+
 def descobrir_cnpjs_fii(rede, procurados):
     """
     Descobre no Fundos.NET o CNPJ de FIIs que não estão na tabela.
 
     procurados: {código: (nome de pregão na B3, ISINs do papel)}.
-    Devolve {código: (cnpj, nome do fundo)} só dos encontrados.
+    Devolve ({código: (cnpj, nome do fundo)} dos encontrados, completo), em
+    que completo=False indica que alguma consulta falhou — quem não foi achado
+    nesse caso NÃO deve ser dado como inexistente.
+
+    Cada fundo é procurado só no tipo indicado pelo nome de pregão (FIAGRO,
+    FIDC ou FII), o que deixa a consulta bem mais leve.
 
     Como: a lista de avisos de rendimento recentes de TODOS os FIIs traz o
     nome de pregão de cada fundo (o mesmo da B3). Para cada candidato com o
@@ -500,14 +516,24 @@ def descobrir_cnpjs_fii(rede, procurados):
     ISIN) do papel — só então o CNPJ do aviso é aceito. Um nome parecido
     nunca basta.
     """
-    achados = {}
+    achados, completo = {}, True
     hoje = pd.Timestamp.today().normalize()
     for dias in (45, 150):        # quem não pagou no último mês e meio, mais atrás
         faltam = {c: v for c, v in procurados.items() if c not in achados}
         if not faltam:
             break
-        lista = rede.fnet_documentos(None, hoje - timedelta(days=dias), hoje, limite=4000)
+        listas = {}
+        for tipo in sorted({tipo_fnet_pelo_nome(n) for n, _ in faltam.values()}):
+            try:
+                listas[tipo] = rede.fnet_documentos(None, hoje - timedelta(days=dias), hoje,
+                                                    limite=4000, tipos=(tipo,))
+            except FonteIndisponivel as e:
+                completo = False
+                print(f"  [aviso] lista do Fundos.NET (tipo {tipo}) falhou: {e}")
         for codigo, (nome, isins) in faltam.items():
+            lista = listas.get(tipo_fnet_pelo_nome(nome))
+            if lista is None:
+                continue
             alvo = _nome_normal(nome)
             emp = codigo[:4]
             candidatos = []
@@ -523,13 +549,16 @@ def descobrir_cnpjs_fii(rede, procurados):
                     xml = rede.fnet_xml(item.get("id"))
                     itens = ler_xml_rendimentos(xml)
                     cnpj = ler_xml_cnpj(xml)
-                except (ET.ParseError, FonteIndisponivel):
+                except FonteIndisponivel:
+                    completo = False
+                    continue
+                except ET.ParseError:
                     continue
                 if len(cnpj) == 14 and any(x["codigo"] == codigo or (x["isin"] and x["isin"] in isins)
                                            for x in itens):
                     achados[codigo] = (cnpj, (item.get("descricaoFundo") or "").strip())
                     break
-    return achados
+    return achados, completo
 
 
 def gravar_cnpj_extra(caminho, codigo, cnpj):
@@ -1036,6 +1065,20 @@ def _dados_fnet(rede, cache, cnpj, inicio, fim, ultima_data, andamento=None, cha
 # =========================================================================== #
 #  Função principal                                                            #
 # =========================================================================== #
+def _motivo_12_meses(motivo, isins, complemento):
+    """Complemento do aviso 'só há proventos da B3 a partir de...'."""
+    if motivo == "busca_falhou":
+        return (" (o Fundos.NET não respondeu ao procurar o CNPJ deste fundo; "
+                "a próxima importação tenta de novo)")
+    if motivo == "nao_achado":
+        return " (o CNPJ não está na tabela e não foi achado no Fundos.NET — ver README)"
+    if any("CTF" in i for i in isins):
+        if _nome_normal((complemento or {}).get("tradingName")).split(" ")[0] in PREFIXOS_FNET:
+            return " (o CNPJ não está na tabela; nova busca em até 30 dias — ver README)"
+        return " (FI-Infra, FIP e ETFs não têm histórico de rendimentos no Fundos.NET — ver README)"
+    return ""
+
+
 def _isins_do_papel(bruto, ticker):
     """ISINs que o papel teve no COTAHIST baixado."""
     if bruto is None or "codisi" not in bruto.columns:
@@ -1146,6 +1189,7 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
     t0 = time.time()
     baixado = _executar(tarefas, progress, "consultando a B3", andamento)
     notas = {}                         # informações (não são problemas)
+    motivo_sem_historico = {}          # papel -> por que ficou só com 12 meses
 
     # 1ª fase (b) — FII que não está na tabela de CNPJs: o programa procura o
     # CNPJ no Fundos.NET, confere e guarda no fii_cnpj.csv do usuário. Quem
@@ -1160,10 +1204,10 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
             isins = _isins_do_papel(bruto, ticker)
             comp = res[0]
             nome = comp.get("tradingName") or ""
-            parece_fii = (_nome_normal(nome).split(" ")[0] in ("FII", "FIAGRO", "FIDC", "FI-INFRA", "FIINFRA")
-                          or any((e.get("isinCode") or "").upper() in isins
-                                 for e in comp.get("cashDividends") or []))
-            if not (any("CTF" in i for i in isins) and parece_fii):
+            # Só FII, Fiagro e FIDC publicam no Fundos.NET; FI-Infra, FIP e ETFs
+            # não estão lá, e procurá-los só pesaria a consulta.
+            if not (any("CTF" in i for i in isins)
+                    and _nome_normal(nome).split(" ")[0] in PREFIXOS_FNET):
                 continue
             tentativa = cache.ler(f"sem_cnpj_{ticker}") or {}
             try:
@@ -1175,11 +1219,7 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
         if procurados:
             if progress is not None:
                 progress(0, 1, "procurando o CNPJ de FII novo")
-            try:
-                achados = descobrir_cnpjs_fii(rede, procurados)
-            except FonteIndisponivel as e:
-                achados = {}
-                print(f"  [aviso] busca de CNPJ no Fundos.NET falhou: {e}")
+            achados, completo = descobrir_cnpjs_fii(rede, procurados)
             novas = {}
             for ticker in procurados:
                 if ticker in achados:
@@ -1194,8 +1234,13 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                            " — NÃO foi possível guardá-lo (pasta sem permissão de escrita?)"))
                     novas[("fnet", ticker)] = partial(_dados_fnet, rede, cache, cnpj, inicio, fim,
                                                       fim, andamento, ("fnet", ticker))
-                else:
+                elif completo:
                     cache.gravar(f"sem_cnpj_{ticker}", {"em": datetime.now().isoformat(timespec="seconds")})
+                    motivo_sem_historico[ticker] = "nao_achado"
+                else:
+                    # Falha de conexão não prova que o fundo não existe: nada é
+                    # gravado, e a próxima importação procura de novo.
+                    motivo_sem_historico[ticker] = "busca_falhou"
             baixado.update(_executar(novas, progress, "Fundos.NET", andamento))
     if hasattr(rede, "fechar"):
         rede.fechar()
@@ -1272,8 +1317,8 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                         avisos.append(
                             f"só há proventos da B3 a partir de {_fmt(min(recentes))}; "
                             f"os anteriores NÃO foram ajustados"
-                            + (" (FII: o CNPJ não está na tabela e não foi achado no Fundos.NET — ver README)"
-                               if any("CTF" in i for i in isins) else ""))
+                            + _motivo_12_meses(motivo_sem_historico.get(ticker), isins,
+                                               complemento))
 
         # 5) Aplicação: preços até a data-com (inclusive) × fator
         aplicados = [ev for ev in eventos if inicio <= ev["data_com"] < fim]
@@ -1388,7 +1433,7 @@ if __name__ == "__main__":
         if not cnpj and _nome_normal(comp["tradingName"]).startswith(("FII", "FIAGRO", "FIDC")):
             print("  FII fora da tabela — procurando o CNPJ no Fundos.NET...")
             try:
-                achado = descobrir_cnpjs_fii(rede, {t: (comp["tradingName"], set())})
+                achado, _ = descobrir_cnpjs_fii(rede, {t: (comp["tradingName"], set())})
             except FonteIndisponivel as e:
                 achado = {}
                 print(f"  Fundos.NET não respondeu: {e}")
