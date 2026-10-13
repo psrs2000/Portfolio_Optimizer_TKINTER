@@ -1342,8 +1342,9 @@ class B3ImportDialog(_PriceImportDialog):
         self.site_entry = QLineEdit()
         self.site_entry.setToolTip(
             "Endereço da página de proventos; o código do papel é acrescentado no fim "
-            "(ou entra no lugar de {ticker}). O site precisa mostrar uma tabela com "
-            "as colunas \"Data com\" e \"Valor\".")
+            "(ou entra no lugar de {ticker}). Vários endereços, separados por \";\", são "
+            "tentados em ordem. O site precisa mostrar uma tabela com as colunas "
+            "\"Data com\" (ou \"Data base\") e \"Valor\".")
         linha_site.addWidget(self.site_entry, 1)
         b_padrao = QPushButton("Padrão")
         b_padrao.setToolTip("Volta ao endereço padrão")
@@ -1373,8 +1374,10 @@ class B3ImportDialog(_PriceImportDialog):
         self.chk_eventos.setChecked(bool(ler_preferencia(PREF_AJUSTAR_EVENTOS, False)))
         self.chk_proventos.setChecked(bool(ler_preferencia(PREF_AJUSTAR_PROVENTOS, True)))
         self.chk_site.setChecked(bool(ler_preferencia(PREF_SITE_NAO_OFICIAL, False)))
-        self.site_entry.setText(ler_preferencia(PREF_SITE_ENDERECO, eventsrc.SITE_PADRAO)
-                                or eventsrc.SITE_PADRAO)
+        endereco = ler_preferencia(PREF_SITE_ENDERECO, eventsrc.SITE_PADRAO) or eventsrc.SITE_PADRAO
+        if endereco in eventsrc.SITES_PADRAO_ANTERIORES:   # padrão antigo, não escolha do usuário
+            endereco = eventsrc.SITE_PADRAO
+        self.site_entry.setText(endereco)
         self.chk_eventos.toggled.connect(self._mudou_ajuste)
         self.chk_proventos.toggled.connect(self._mudou_ajuste)
         self.chk_site.toggled.connect(self._ligou_site)
@@ -1392,8 +1395,9 @@ class B3ImportDialog(_PriceImportDialog):
                 "• Só são usados para completar o histórico que as fontes oficiais não "
                 "têm (hoje: FI-Infra e FIP), e só se os últimos 12 meses do site "
                 "baterem com os da B3.\n"
-                "• O programa respeita o robots.txt do site e lê uma página por papel, "
-                "guardando-a no cache.\n"
+                "• O programa respeita o robots.txt do site e lê a página do papel (e as "
+                "seguintes, com pausa, se a tabela for paginada), guardando-as no cache. "
+                "O segundo endereço só é consultado se o primeiro não servir.\n"
                 "• Os dados de sites como o Carteira Falcão são para uso PESSOAL. "
                 "Cabe a quem usa respeitar os termos do site escolhido.\n\n"
                 "No relatório, esses proventos aparecem marcados com o nome do site.")

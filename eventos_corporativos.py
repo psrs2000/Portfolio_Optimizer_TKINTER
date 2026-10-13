@@ -53,7 +53,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from functools import partial
 from urllib import robotparser
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import pandas as pd
 import requests
@@ -83,9 +83,16 @@ CABECALHOS = {
 PAUSA = 0.25                   # segundos entre pedidos (cortesia com o servidor)
 # Site NÃO oficial (opcional) para completar o histórico de proventos que as
 # fontes oficiais não têm (hoje: FI-Infra e FIP). O endereço recebe o código
-# no fim, ou no lugar de {ticker}. Os termos do Carteira Falcão permitem o uso
-# dos dados para fins pessoais, e o robots.txt dele libera /dividendos.
-SITE_PADRAO = "https://carteirafalcao.com.br/dividendos/"
+# no fim, ou no lugar de {ticker}. Vários endereços separados por ";" são
+# tentados em ordem: o seguinte só é consultado se o anterior não passar na
+# conferência ou não cobrir o período. Os termos do Carteira Falcão permitem
+# o uso dos dados para fins pessoais; os do BRFiis não restringem o uso; o
+# robots.txt dos dois libera as páginas. O BRFiis traz as amortizações (o
+# Carteira Falcão não), e a tabela dele é paginada (?page=N).
+SITE_PADRAO = "https://carteirafalcao.com.br/dividendos/ ; https://brfiis.com.br/fundos/"
+SITES_PADRAO_ANTERIORES = ("https://carteirafalcao.com.br/dividendos/",)
+PAUSA_SITE = 1.0               # segundos entre as páginas de uma tabela paginada
+MAX_PAGINAS_SITE = 40
 # Tipos de fundo da busca do Fundos.NET que publicam o aviso estruturado de
 # "Rendimentos e Amortizações" (mesmo XML): FII, Fiagro e FIDC. FI-Infra e FIP
 # não publicam lá.
@@ -622,16 +629,19 @@ def _texto_html(t):
 
 def ler_tabela_proventos(html):
     """
-    A tabela de proventos de uma página: a que tem colunas de "Data com" e
-    "Valor" (o "Tipo" é opcional). Serve para qualquer site que apresente os
-    proventos assim — o Carteira Falcão, por exemplo.
+    A tabela de proventos de uma página: a que tem colunas de "Data com" (ou
+    "Data base", o nome usado nos avisos de fundos) e "Valor" (o "Tipo" é
+    opcional). Serve para qualquer site que apresente os proventos assim — o
+    Carteira Falcão e o BRFiis, por exemplo. Do valor vale o primeiro número
+    da célula (o BRFiis põe ao lado a variação, como "+614,3%").
     Devolve [{'data': Timestamp, 'valor': float, 'tipo': str}].
     """
     melhor = []
     for tabela in re.findall(r"<table.*?</table>", html, re.S | re.I):
         titulos = [_texto_html(x).lower()
                    for x in re.findall(r"<th[^>]*>(.*?)</th>", tabela, re.S | re.I)]
-        i_data = next((i for i, t in enumerate(titulos) if "data" in t and "com" in t.split()), None)
+        i_data = next((i for i, t in enumerate(titulos)
+                       if "data" in t.split() and {"com", "base"} & set(t.split())), None)
         i_valor = next((i for i, t in enumerate(titulos) if "valor" in t), None)
         i_tipo = next((i for i, t in enumerate(titulos) if "tipo" in t), None)
         if i_data is None or i_valor is None:
@@ -642,7 +652,8 @@ def ler_tabela_proventos(html):
             if len(cel) <= max(i_data, i_valor):
                 continue
             data = _data(cel[i_data])
-            valor = _num(re.sub(r"[^\d,.\-]", "", cel[i_valor]))
+            numero = re.search(r"\d[\d.]*(?:,\d+)?", cel[i_valor])
+            valor = _num(numero.group(0)) if numero else None
             if data is None or not valor or valor <= 0:
                 continue
             tipo = cel[i_tipo] if i_tipo is not None and i_tipo < len(cel) else "provento"
@@ -659,21 +670,102 @@ def endereco_site(base, ticker):
     return base.rstrip("/") + "/" + ticker
 
 
-def _dados_site(rede, cache, base, ticker, ultima_data):
-    """Proventos do papel no site não oficial (do cache, se ainda servir)."""
+def lista_sites(texto):
+    """'end1 ; end2' (ou uma lista) -> [end1, end2], na ordem."""
+    if not texto:
+        return []
+    if isinstance(texto, (list, tuple)):
+        return [t.strip() for t in texto if t and t.strip()]
+    return [t.strip() for t in re.split(r"[;\n]", texto) if t.strip()]
+
+
+def _paginacao(html, url):
+    """
+    (última página, nome do parâmetro) se a tabela for paginada por links
+    para o próprio endereço com ?page=N (ou ?pagina=N); senão (1, None).
+    """
+    caminho = urlparse(url).path.rstrip("/")
+    ultima, chave = 1, None
+    for href in re.findall(r"""href=["']([^"']+)["']""", html, re.I):
+        u = urlparse(urljoin(url, href.replace("&amp;", "&")))
+        if u.path.rstrip("/") != caminho:
+            continue
+        for k, v in parse_qsl(u.query):
+            if k.lower() in ("page", "pagina") and v.isdigit() and int(v) > ultima:
+                ultima, chave = int(v), k
+    return ultima, chave
+
+
+def _com_parametro(url, chave, valor):
+    p = urlparse(url)
+    q = [(k, v) for k, v in parse_qsl(p.query) if k != chave] + [(chave, str(valor))]
+    return urlunparse(p._replace(query=urlencode(q), fragment=""))
+
+
+def _dados_site(rede, cache, base, ticker, inicio, ultima_data):
+    """
+    Proventos do papel no site não oficial (do cache, se ainda servir). Se a
+    tabela for paginada, lê as páginas seguintes (com pausa entre elas) só até
+    alcançar o início do período.
+    """
     url = endereco_site(base, ticker)
     site = urlparse(url).netloc
     nome = f"site_{site}_{ticker}"
     salvo = cache.ler(nome)
-    if salvo and salvo.get("url") == url and _cache_serve(salvo.get("baixado_em"), ultima_data):
+    if (salvo and salvo.get("url") == url and _cache_serve(salvo.get("baixado_em"), ultima_data)
+            and (salvo.get("completo", True)
+                 or pd.Timestamp(salvo.get("desde") or "2100-01-01") <= inicio)):
         return {"site": site, "url": url, "proibido": False, "linhas": salvo.get("linhas") or []}
     if not rede.site_permite(url):
         return {"site": site, "url": url, "proibido": True, "linhas": []}
+    html = rede.site_html(url)
+    linhas = ler_tabela_proventos(html)
+    ultima, chave = _paginacao(html, url)
+    completo = True
+    for n in range(2, ultima + 1):
+        if not linhas:
+            break
+        if min(l["data"] for l in linhas) < inicio or n > MAX_PAGINAS_SITE:
+            completo = False           # o resto é anterior ao período
+            break
+        pagina = _com_parametro(url, chave, n)
+        if not rede.site_permite(pagina):
+            completo = False
+            break
+        time.sleep(PAUSA_SITE)
+        novas = ler_tabela_proventos(rede.site_html(pagina))
+        if not novas:
+            break
+        linhas += novas
     linhas = [{"data": l["data"].strftime("%Y-%m-%d"), "valor": l["valor"], "tipo": l["tipo"]}
-              for l in ler_tabela_proventos(rede.site_html(url))]
+              for l in linhas]
     cache.gravar(nome, {"baixado_em": datetime.now().isoformat(timespec="seconds"),
-                        "url": url, "linhas": linhas})
+                        "url": url, "linhas": linhas, "completo": completo,
+                        "desde": pd.Timestamp(inicio).strftime("%Y-%m-%d")})
     return {"site": site, "url": url, "proibido": False, "linhas": linhas}
+
+
+def _buscar_sites(rede, cache, sites, ticker, inicio, ultima_data, recentes, papel):
+    """
+    Consulta os sites na ordem dada; para no primeiro que passa na conferência
+    com a B3 e cobre o período (ou a vida do papel, se for mais nova).
+    Devolve [(endereço base, resultado ou exceção)] dos sites consultados.
+    """
+    primeiro = min(papel["data"]) if papel is not None and len(papel) else inicio
+    alvo = max(inicio, primeiro) + timedelta(days=45)
+    tentativas = []
+    for base in sites:
+        try:
+            resultado = _dados_site(rede, cache, base, ticker, inicio, ultima_data)
+        except (FonteIndisponivel, requests.RequestException) as e:
+            tentativas.append((base, e))
+            continue
+        tentativas.append((base, resultado))
+        if resultado["linhas"] and not resultado["proibido"]:
+            aceito = conferir_site(resultado["linhas"], recentes, papel)[0]
+            if aceito and min(pd.Timestamp(l["data"]) for l in resultado["linhas"]) <= alvo:
+                break
+    return tentativas
 
 
 def _bloco_recente_b3(complemento, isins):
@@ -773,6 +865,24 @@ def _proventos_do_site(resultado, recentes, papel, inicio, site_padrao):
            f"{acertos} de {total} datas"
            + (" — a 'data com' do site é a data ex, corrigida para a data-com" if ex_corrigida else ""))
     return eventos, msg, True
+
+
+def _proventos_dos_sites(tentativas, recentes, papel, inicio):
+    """
+    Entre os sites consultados, fica o aceito na conferência que traz mais
+    datas (no empate, o primeiro da lista). Devolve (eventos, mensagem, aceito);
+    a mensagem cita também os sites recusados.
+    """
+    melhor, recusas = None, []
+    for base, resultado in tentativas:
+        eventos, msg, aceito = _proventos_do_site(resultado, recentes, papel, inicio, base)
+        if not aceito:
+            recusas.append(msg)
+        elif melhor is None or len(eventos) > len(melhor[0]):
+            melhor = (eventos, msg)
+    if melhor is None:
+        return [], "; ".join(recusas), False
+    return melhor[0], melhor[1] + (f" (outro site: {'; '.join(recusas)})" if recusas else ""), True
 
 
 # =========================================================================== #
@@ -1353,8 +1463,9 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
     proventos : True ajusta também dividendos, JCP e rendimentos (retorno
                 total); False só desdobramentos, grupamentos e bonificações.
     site_nao_oficial : endereço de um site (ex.: SITE_PADRAO) para completar
-                o histórico de proventos que as fontes oficiais não têm. Só é
-                usado depois de conferido com a B3. None = não usar.
+                o histórico de proventos que as fontes oficiais não têm, ou
+                vários separados por ";" (tentados em ordem). Só é usado
+                depois de conferido com a B3. None = não usar.
 
     Devolve (wide_ajustado, relatorio). Um papel cuja fonte não responde
     segue SEM ajuste e aparece em relatorio['falhas'] — nunca é ajustado pela
@@ -1447,7 +1558,8 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
     # 1ª fase (c) — site não oficial, só para quem ficaria com os ~12 meses
     # da B3 (FI-Infra, FIP...). Ações (histórico da B3) e fundos com
     # Fundos.NET não são consultados.
-    if proventos and site_nao_oficial:
+    sites = lista_sites(site_nao_oficial)
+    if proventos and sites:
         tarefas_site = {}
         for ticker in papeis:
             empresa, _ = empresa_e_classe(ticker)
@@ -1461,8 +1573,9 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                 continue
             recentes = _bloco_recente_b3(comp, _isins_do_papel(bruto, ticker))
             if recentes and min(recentes) > inicio:
-                tarefas_site[("site", ticker)] = partial(_dados_site, rede, cache,
-                                                         site_nao_oficial, ticker, fim)
+                tarefas_site[("site", ticker)] = partial(
+                    _buscar_sites, rede, cache, sites, ticker, inicio, fim, recentes,
+                    _cotahist_do_papel(bruto, ticker))
         baixado.update(_executar(tarefas_site, progress, "site não oficial", andamento))
 
     if hasattr(rede, "fechar"):
@@ -1537,9 +1650,11 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                     if recentes and min(recentes) > inicio:
                         resultado_site = baixado.get(("site", ticker))
                         usado, msg_site = False, ""
-                        if resultado_site is not None:
-                            evs_site, msg_site, usado = _proventos_do_site(
-                                resultado_site, recentes, papel, inicio, site_nao_oficial)
+                        if isinstance(resultado_site, Exception):
+                            resultado_site = [(sites[0], resultado_site)]
+                        if resultado_site:
+                            evs_site, msg_site, usado = _proventos_dos_sites(
+                                resultado_site, recentes, papel, inicio)
                             eventos += evs_site
                         if usado:
                             info["notas"].append(msg_site)
