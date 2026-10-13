@@ -221,7 +221,6 @@ class Rede:
         self._trava = threading.Lock()
         self._fnet_cookies = None
         self._fnet_cabecalhos = {}
-        self._tipo_fnet = {}          # CNPJ -> tipo de fundo em que ele publica
         self._pool = None
 
     def pool(self):
@@ -360,21 +359,24 @@ class Rede:
         Avisos de 'Rendimentos e Amortizações' entregues no período: do fundo
         com esse CNPJ, ou de TODOS os FIIs, Fiagro e FIDC se cnpj for None.
 
-        A busca do Fundos.NET exige o tipo de fundo. Com CNPJ, tenta-se FII,
-        depois Fiagro, depois FIDC, e o tipo que respondeu fica lembrado.
+        A busca do Fundos.NET exige o tipo de fundo. Com CNPJ, consultam-se
+        TODOS os tipos e os avisos são juntados: um mesmo fundo pode ter
+        publicado como "Fundo Imobiliário" até 2025 e como "Fiagro" depois (a
+        adaptação à CVM 175). Parar no primeiro tipo que respondia deixava
+        meses de fora.
         """
         if cnpj is None:
             docs = []
             for tipo in tipos:
                 docs += self._fnet_buscar(None, tipo, d_ini, d_fim, limite)
             return docs
-        conhecido = self._tipo_fnet.get(cnpj)
-        for tipo in ([conhecido] if conhecido else TIPOS_FNET):
-            docs = self._fnet_buscar(cnpj, tipo, d_ini, d_fim, limite)
-            if docs:
-                self._tipo_fnet[cnpj] = tipo
-                return docs
-        return []
+        docs, vistos = [], set()
+        for tipo in TIPOS_FNET:
+            for d in self._fnet_buscar(cnpj, tipo, d_ini, d_fim, limite):
+                if d.get("id") not in vistos:
+                    vistos.add(d.get("id"))
+                    docs.append(d)
+        return docs
 
     def _fnet_buscar(self, cnpj, tipo, d_ini, d_fim, limite):
         self._abrir_fnet()
@@ -796,7 +798,8 @@ def eventos_detectados(papel, eventos_conhecidos, inicio, fim, avisos):
 
 NOMES_PROVENTO = {"JRS CAP PROPRIO": "JCP", "DIVIDENDO": "Dividendo",
                   "RENDIMENTO": "Rendimento", "REST CAP DIN": "Restituição de capital",
-                  "AMORTIZACAO": "Amortização", "AMORTIZAÇÃO": "Amortização"}
+                  "AMORTIZACAO": "Amortização", "AMORTIZAÇÃO": "Amortização",
+                  "AMORTIZACAO RF": "Amortização", "AMORTIZACAO RV": "Amortização"}
 
 
 def _agrupar_proventos(linhas, fonte):
@@ -1227,7 +1230,7 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                     tabela_fii[ticker] = cnpj
                     gravado = gravar_cnpj_extra(tabela_fii_extra, ticker, cnpj)
                     notas.setdefault(ticker, []).append(
-                        f"FII fora da tabela: CNPJ {cnpj} ({nome_fundo or 'nome não informado'}) "
+                        f"Fundo fora da tabela: CNPJ {cnpj} ({nome_fundo or 'nome não informado'}) "
                         f"encontrado no Fundos.NET e conferido"
                         + (f" — guardado para as próximas vezes em: {os.path.abspath(tabela_fii_extra)}"
                            if gravado else
@@ -1310,9 +1313,14 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                 eventos += proventos_da_b3(historico, complemento, classe, isins,
                                            papel, inicio, fim, avisos)
                 if not historico and (complemento or {}).get("cashDividends"):
+                    # A B3 guarda ~12 meses; uma linha antiga solta (o JURO11
+                    # tem uma de 2022) não significa que o período está coberto.
                     recentes = [_data(e.get("lastDatePrior"))
-                                for e in complemento["cashDividends"]]
+                                for e in complemento["cashDividends"]
+                                if (e.get("isinCode") or "").strip().upper() in isins]
                     recentes = [d for d in recentes if d is not None]
+                    if recentes:
+                        recentes = [d for d in recentes if d >= max(recentes) - timedelta(days=400)]
                     if recentes and min(recentes) > inicio:
                         avisos.append(
                             f"só há proventos da B3 a partir de {_fmt(min(recentes))}; "
