@@ -826,6 +826,8 @@ PREF_LIMPAR_CACHE = "limpar_cache_cvm_ao_sair"
 PREF_PASTA_CACHE = "pasta_cache_cvm"
 PREF_AJUSTAR_EVENTOS = "b3_ajustar_eventos"
 PREF_AJUSTAR_PROVENTOS = "b3_ajustar_proventos"
+PREF_SITE_NAO_OFICIAL = "b3_site_nao_oficial"
+PREF_SITE_ENDERECO = "b3_site_endereco"
 
 
 def _caminho_preferencias():
@@ -1312,7 +1314,7 @@ class B3ImportDialog(_PriceImportDialog):
                    "cada ano é grande (dezenas de MB) e pode levar de alguns segundos "
                    "a minutos — a janela pode parecer parada durante cada ano.")
         self.progress_label = "Baixando COTAHIST"
-        self.setMinimumSize(600, 840)
+        self.setMinimumSize(600, 920)
 
     def _extra_widgets(self, layout):
         # Ajuste por eventos corporativos: OPCIONAL e desligado de fábrica.
@@ -1328,6 +1330,29 @@ class B3ImportDialog(_PriceImportDialog):
         self.chk_proventos.setStyleSheet("margin-left: 18px;")
         bl.addWidget(self.chk_eventos)
         bl.addWidget(self.chk_proventos)
+
+        # Site NÃO oficial: só para completar o histórico que as fontes
+        # oficiais não têm (FI-Infra, FIP). Desligado de fábrica.
+        self.chk_site = QCheckBox(
+            "Completar com site não oficial quando a fonte oficial não tiver o histórico")
+        self.chk_site.setStyleSheet("margin-left: 36px;")
+        bl.addWidget(self.chk_site)
+        linha_site = QHBoxLayout()
+        linha_site.addSpacing(54)
+        self.site_entry = QLineEdit()
+        self.site_entry.setToolTip(
+            "Endereço da página de proventos; o código do papel é acrescentado no fim "
+            "(ou entra no lugar de {ticker}). O site precisa mostrar uma tabela com "
+            "as colunas \"Data com\" e \"Valor\".")
+        linha_site.addWidget(self.site_entry, 1)
+        b_padrao = QPushButton("Padrão")
+        b_padrao.setToolTip("Volta ao endereço padrão")
+        b_padrao.clicked.connect(lambda: self.site_entry.setText(
+            eventsrc.SITE_PADRAO if EVENTOS_OK else ""))
+        linha_site.addWidget(b_padrao)
+        bl.addLayout(linha_site)
+        self._linha_site = (self.site_entry, b_padrao)
+
         self.hint_eventos = QLabel()
         self.hint_eventos.setStyleSheet("color: gray;")
         self.hint_eventos.setWordWrap(True)
@@ -1337,6 +1362,9 @@ class B3ImportDialog(_PriceImportDialog):
         if not EVENTOS_OK:
             self.chk_eventos.setEnabled(False)
             self.chk_proventos.setEnabled(False)
+            self.chk_site.setEnabled(False)
+            for w in self._linha_site:
+                w.setEnabled(False)
             self.hint_eventos.setText(
                 "Indisponível: não foi possível carregar o módulo "
                 f"'eventos_corporativos.py' ({EVENTOS_IMPORT_ERROR}).")
@@ -1344,16 +1372,43 @@ class B3ImportDialog(_PriceImportDialog):
 
         self.chk_eventos.setChecked(bool(ler_preferencia(PREF_AJUSTAR_EVENTOS, False)))
         self.chk_proventos.setChecked(bool(ler_preferencia(PREF_AJUSTAR_PROVENTOS, True)))
+        self.chk_site.setChecked(bool(ler_preferencia(PREF_SITE_NAO_OFICIAL, False)))
+        self.site_entry.setText(ler_preferencia(PREF_SITE_ENDERECO, eventsrc.SITE_PADRAO)
+                                or eventsrc.SITE_PADRAO)
         self.chk_eventos.toggled.connect(self._mudou_ajuste)
         self.chk_proventos.toggled.connect(self._mudou_ajuste)
+        self.chk_site.toggled.connect(self._ligou_site)
+        self.chk_site.toggled.connect(self._mudou_ajuste)
+        self.site_entry.editingFinished.connect(
+            lambda: gravar_preferencia(PREF_SITE_ENDERECO, self.site_entry.text().strip()))
         self._mudou_ajuste()
+
+    def _ligou_site(self, marcado):
+        """Ao ligar o site não oficial, deixa claro o que isso significa."""
+        if marcado:
+            messagebox.showinfo(
+                "Site não oficial",
+                "Os proventos virão de um site de terceiros, e não da B3 ou da CVM.\n\n"
+                "• Só são usados para completar o histórico que as fontes oficiais não "
+                "têm (hoje: FI-Infra e FIP), e só se os últimos 12 meses do site "
+                "baterem com os da B3.\n"
+                "• O programa respeita o robots.txt do site e lê uma página por papel, "
+                "guardando-a no cache.\n"
+                "• Os dados de sites como o Carteira Falcão são para uso PESSOAL. "
+                "Cabe a quem usa respeitar os termos do site escolhido.\n\n"
+                "No relatório, esses proventos aparecem marcados com o nome do site.")
 
     def _mudou_ajuste(self, *_):
         """Grava a escolha e atualiza a explicação."""
         ligado = self.chk_eventos.isChecked()
         self.chk_proventos.setEnabled(ligado)
+        com_site = ligado and self.chk_proventos.isChecked()
+        self.chk_site.setEnabled(com_site)
+        for w in self._linha_site:
+            w.setEnabled(com_site and self.chk_site.isChecked())
         gravar_preferencia(PREF_AJUSTAR_EVENTOS, ligado)
         gravar_preferencia(PREF_AJUSTAR_PROVENTOS, self.chk_proventos.isChecked())
+        gravar_preferencia(PREF_SITE_NAO_OFICIAL, self.chk_site.isChecked())
         if not ligado:
             self.hint_eventos.setText(
                 "Desmarcado: os preços vêm como foram negociados. Um desdobramento "
@@ -1366,7 +1421,10 @@ class B3ImportDialog(_PriceImportDialog):
                 "da série continua sendo o real. Os eventos vêm da B3 (e do "
                 "Fundos.NET para FIIs) — alguns segundos por papel na primeira vez; "
                 "depois ficam guardados. Ao final, um relatório mostra tudo o que "
-                "foi ajustado.")
+                "foi ajustado."
+                + (" O site não oficial só entra onde a fonte oficial não tem o "
+                   "histórico, e só depois de conferido com a B3."
+                   if self.chk_site.isChecked() else ""))
         else:
             self.hint_eventos.setText(
                 "Só os eventos em ações são corrigidos; os proventos ficam fora "
@@ -1389,7 +1447,9 @@ class B3ImportDialog(_PriceImportDialog):
                     wide, df, proventos=self.chk_proventos.isChecked(),
                     pasta_cache=os.path.join(pasta_dados_usuario(), "cache_eventos"),
                     tabela_fii_extra=os.path.join(pasta_dados_usuario(), "fii_cnpj.csv"),
-                    progress=progress)
+                    progress=progress,
+                    site_nao_oficial=(self.site_entry.text().strip() or None)
+                    if self.chk_proventos.isChecked() and self.chk_site.isChecked() else None)
                 relatorio["ajuste"] = rel
                 self.origem_desc = f"{self.origem_desc} — ajustada por eventos"
             except Exception as e:

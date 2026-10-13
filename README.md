@@ -232,7 +232,7 @@ O COTAHIST traz os preços **como foram negociados**. Num desdobramento de 1 par
 | Desdobramentos que faltam na lista da B3 | O próprio COTAHIST (ver abaixo) |
 | Dividendos, JCP, restituições de capital (ações) | Histórico de proventos da B3 (desde 1996), já com o percentual sobre o preço da data-com |
 | Rendimentos e amortizações de FIIs, Fiagro e FIDC listados | Fundos.NET (avisos publicados pelos próprios fundos) + B3 (últimos ~12 meses) |
-| Rendimentos de FI-Infra e FIP | Só B3 (últimos ~12 meses) — ver limites abaixo |
+| Rendimentos de FI-Infra e FIP | B3 (últimos ~12 meses); o histórico anterior, só com a opção de site não oficial — ver abaixo |
 | Ações antigas cotadas por lote de mil | Campo FATCOT do COTAHIST: tudo vira preço por ação |
 
 **Desdobramentos ausentes na lista da B3.** Acontece (os da Magazine Luiza em 2017 e 2019 não estão lá). O programa os encontra no COTAHIST quando três marcas aparecem no mesmo pregão: o número de distribuição muda (a B3 o muda exatamente no dia "ex"), a cotação salta x vezes (x = 2, 3, 4, 8, 10...) e a quantidade negociada passa a ser cerca de x vezes a de antes. Um tombo de mercado derruba o preço mas não multiplica a quantidade, e por isso não é confundido com desdobramento.
@@ -256,6 +256,15 @@ codigo;cnpj
 HGLG11;11728688000147
 ```
 
+**Site não oficial (opcional, desligado de fábrica).** As fontes oficiais não têm o histórico de rendimentos de FI-Infra e FIP: a B3 guarda só ~12 meses e esses fundos não publicam no Fundos.NET. Para completar, a caixa **"Completar com site não oficial quando a fonte oficial não tiver o histórico"** (que só aparece com os proventos marcados) busca os proventos num site de terceiros. O endereço padrão é o do Carteira Falcão (`https://carteirafalcao.com.br/dividendos/`); o código do papel é acrescentado no fim, ou entra no lugar de `{ticker}`. Outro site serve se mostrar uma tabela com as colunas "Data com" e "Valor".
+
+Regras, para que um site de terceiros não contamine o ajuste:
+- **Só tapa buracos:** é consultado apenas para os papéis que ficariam com os ~12 meses da B3. Ações, units, FIIs e Fiagro continuam só com as fontes oficiais.
+- **Conferência obrigatória:** os últimos 12 meses do site precisam bater com os da B3 — data e valor, com tolerância de 1 centavo pelo arredondamento — em pelo menos 90% das datas. Se o site chamar de "data com" a data ex (o Carteira Falcão faz isso), a conferência percebe e corrige. Se não bater (o XPIE11 no Carteira Falcão não traz as amortizações, por exemplo), o site é **ignorado** para aquele papel e o relatório diz por quê.
+- **Fonte visível:** no relatório, esses proventos aparecem como `[site: carteirafalcao.com.br]`, com uma nota "FONTE NÃO OFICIAL" e o resultado da conferência.
+- **Respeito ao site:** o programa lê o `robots.txt` antes e não consulta páginas que ele proíba; lê uma página por papel e a guarda no cache.
+- **Termos de uso:** os termos do Carteira Falcão permitem usar os dados **para fins pessoais**. Cabe a quem usa respeitar os termos do site escolhido. O Radar FII **não** foi incluído: os termos dele proíbem copiar ou modificar os dados.
+
 **Limites conhecidos:**
 - **Direitos de subscrição** não são ajustados (dependem de cada investidor exercer ou não).
 - **Cisões** (quando o acionista recebe ações de outra empresa, como a Getnet saindo do Santander em 2021) não são ajustadas: a queda do dia "ex" fica na série, e o relatório avisa com a data.
@@ -264,7 +273,7 @@ HGLG11;11728688000147
 - O JCP entra pelo valor **bruto** — como fazem a B3, o Yahoo e o Excel.
 - Bonificações pequenas (ex.: 5%) que faltem na lista da B3 não são detectadas pelo COTAHIST: um salto de 5% não se distingue de um pregão comum.
 - ETFs e BDRs: os desdobramentos são tratados; proventos, quando a B3 os tiver.
-- **FI-Infra (KDIF11, BDIF11, CDII11, JURO11, IFRA11...) e FIP (XPIE11...): só os rendimentos dos últimos ~12 meses** são ajustados, e o relatório avisa. Esses fundos não publicam o aviso estruturado no Fundos.NET, e a B3 só guarda 12 meses. Foram investigados: (1) a página de eventos de fundos da B3 — usa a mesma consulta, 12 meses; (2) o informe diário da CVM — com o CNPJ certo, a queda da cota na data-com reproduz o rendimento com erro de ~0,1 ponto (CDII11 e JURO11), mas é uma estimativa, o CNPJ não pode ser descoberto automaticamente com segurança (muitos FI-Infra pagam ~1% no fim de cada mês) e o FIP não informa cota diária; (3) sites de terceiros — descartados por não serem fonte oficial. Fica em aberto até haver uma fonte definitiva.
+- **FI-Infra (KDIF11, BDIF11, CDII11, JURO11, IFRA11...) e FIP (XPIE11...): pelas fontes oficiais, só os rendimentos dos últimos ~12 meses** são ajustados, e o relatório avisa (o histórico anterior só com a opção de site não oficial, acima). Esses fundos não publicam o aviso estruturado no Fundos.NET, e a B3 só guarda 12 meses. Foram investigados: (1) a página de eventos de fundos da B3 — usa a mesma consulta, 12 meses; (2) o informe diário da CVM — com o CNPJ certo, a queda da cota na data-com reproduz o rendimento com erro de ~0,1 ponto (CDII11 e JURO11), mas é uma estimativa, o CNPJ não pode ser descoberto automaticamente com segurança (muitos FI-Infra pagam ~1% no fim de cada mês) e o FIP não informa cota diária; (3) sites de terceiros — descartados por não serem fonte oficial. Fica em aberto até haver uma fonte definitiva.
 - Se a B3 não responder para um FII ou Fiagro cujo CNPJ é conhecido, ele ainda recebe os rendimentos do Fundos.NET (os desdobramentos ficam só com a detecção pelo COTAHIST), e o relatório avisa.
 
 **Comparação com o Excel (STOCKHISTORY).** O Excel ajusta corretamente desdobramentos, grupamentos e bonificações, mas **só ajusta proventos de 2024 em diante** (e ainda deixa passar alguns). De 2020 a 2026, isso deixa de fora cerca de 48 pontos percentuais do retorno de BBAS3 e de VIVT3. Com os proventos marcados, a importação da B3 dá o retorno total completo; nos desdobramentos, o resultado coincide com o do Excel.

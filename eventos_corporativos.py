@@ -40,6 +40,7 @@ O cache (pequenos arquivos .json) evita baixar de novo o que já foi baixado.
 """
 
 import base64
+import bisect
 import csv
 import json
 import math
@@ -51,6 +52,8 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta
 from functools import partial
+from urllib import robotparser
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
@@ -78,6 +81,11 @@ CABECALHOS = {
 }
 
 PAUSA = 0.25                   # segundos entre pedidos (cortesia com o servidor)
+# Site NÃO oficial (opcional) para completar o histórico de proventos que as
+# fontes oficiais não têm (hoje: FI-Infra e FIP). O endereço recebe o código
+# no fim, ou no lugar de {ticker}. Os termos do Carteira Falcão permitem o uso
+# dos dados para fins pessoais, e o robots.txt dele libera /dividendos.
+SITE_PADRAO = "https://carteirafalcao.com.br/dividendos/"
 # Tipos de fundo da busca do Fundos.NET que publicam o aviso estruturado de
 # "Rendimentos e Amortizações" (mesmo XML): FII, Fiagro e FIDC. FI-Infra e FIP
 # não publicam lá.
@@ -221,6 +229,7 @@ class Rede:
         self._trava = threading.Lock()
         self._fnet_cookies = None
         self._fnet_cabecalhos = {}
+        self._robots = {}             # site -> regras do robots.txt
         self._pool = None
 
     def pool(self):
@@ -265,6 +274,33 @@ class Rede:
                 print(f"  [nova tentativa {tentativa + 2}/{TENTATIVAS}] {site}: {ultimo}")
                 time.sleep(1.5 * (tentativa + 1))
         raise FonteIndisponivel(ultimo)
+
+    # ---- Site não oficial ----
+    def site_permite(self, url):
+        """
+        O robots.txt do site libera esta página? Sem robots.txt, nada é
+        proibido (é a convenção). Uma vez lido, fica guardado durante a busca.
+        """
+        p = urlparse(url)
+        raiz = f"{p.scheme}://{p.netloc}"
+        with self._trava:
+            regras = self._robots.get(raiz)
+        if regras is None:
+            regras = robotparser.RobotFileParser()
+            try:
+                r = self.s.get(raiz + "/robots.txt", timeout=TEMPO_LIMITE)
+            except requests.RequestException as e:
+                raise FonteIndisponivel(f"{type(e).__name__}: {e}")
+            texto = r.text if r.status_code == 200 else ""
+            if "<html" in texto[:500].lower():   # página de erro, não robots.txt
+                texto = ""
+            regras.parse(texto.splitlines())
+            with self._trava:
+                self._robots[raiz] = regras
+        return regras.can_fetch(CABECALHOS["User-Agent"], url)
+
+    def site_html(self, url):
+        return self._get(url, headers={"Accept": "text/html,application/xhtml+xml,*/*"}).text
 
     def _json(self, url, **kw):
         r = self._get(url, **kw)
@@ -578,6 +614,165 @@ def gravar_cnpj_extra(caminho, codigo, cnpj):
         return True
     except OSError:
         return False
+
+
+def _texto_html(t):
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", t or "")).strip()
+
+
+def ler_tabela_proventos(html):
+    """
+    A tabela de proventos de uma página: a que tem colunas de "Data com" e
+    "Valor" (o "Tipo" é opcional). Serve para qualquer site que apresente os
+    proventos assim — o Carteira Falcão, por exemplo.
+    Devolve [{'data': Timestamp, 'valor': float, 'tipo': str}].
+    """
+    melhor = []
+    for tabela in re.findall(r"<table.*?</table>", html, re.S | re.I):
+        titulos = [_texto_html(x).lower()
+                   for x in re.findall(r"<th[^>]*>(.*?)</th>", tabela, re.S | re.I)]
+        i_data = next((i for i, t in enumerate(titulos) if "data" in t and "com" in t.split()), None)
+        i_valor = next((i for i, t in enumerate(titulos) if "valor" in t), None)
+        i_tipo = next((i for i, t in enumerate(titulos) if "tipo" in t), None)
+        if i_data is None or i_valor is None:
+            continue
+        linhas = []
+        for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", tabela, re.S | re.I):
+            cel = [_texto_html(x) for x in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S | re.I)]
+            if len(cel) <= max(i_data, i_valor):
+                continue
+            data = _data(cel[i_data])
+            valor = _num(re.sub(r"[^\d,.\-]", "", cel[i_valor]))
+            if data is None or not valor or valor <= 0:
+                continue
+            tipo = cel[i_tipo] if i_tipo is not None and i_tipo < len(cel) else "provento"
+            linhas.append({"data": data, "valor": valor, "tipo": tipo or "provento"})
+        if len(linhas) > len(melhor):
+            melhor = linhas
+    return melhor
+
+
+def endereco_site(base, ticker):
+    """'https://site/dividendos/' + 'KDIF11', ou {ticker} trocado pelo código."""
+    if "{ticker}" in base or "{TICKER}" in base:
+        return base.replace("{ticker}", ticker.lower()).replace("{TICKER}", ticker)
+    return base.rstrip("/") + "/" + ticker
+
+
+def _dados_site(rede, cache, base, ticker, ultima_data):
+    """Proventos do papel no site não oficial (do cache, se ainda servir)."""
+    url = endereco_site(base, ticker)
+    site = urlparse(url).netloc
+    nome = f"site_{site}_{ticker}"
+    salvo = cache.ler(nome)
+    if salvo and salvo.get("url") == url and _cache_serve(salvo.get("baixado_em"), ultima_data):
+        return {"site": site, "url": url, "proibido": False, "linhas": salvo.get("linhas") or []}
+    if not rede.site_permite(url):
+        return {"site": site, "url": url, "proibido": True, "linhas": []}
+    linhas = [{"data": l["data"].strftime("%Y-%m-%d"), "valor": l["valor"], "tipo": l["tipo"]}
+              for l in ler_tabela_proventos(rede.site_html(url))]
+    cache.gravar(nome, {"baixado_em": datetime.now().isoformat(timespec="seconds"),
+                        "url": url, "linhas": linhas})
+    return {"site": site, "url": url, "proibido": False, "linhas": linhas}
+
+
+def _bloco_recente_b3(complemento, isins):
+    """
+    {data-com: valor somado} dos proventos dos dados complementares da B3 —
+    só o bloco recente (~12 meses) do próprio papel. Uma linha antiga solta
+    (o JURO11 tem uma de 2022) não conta como cobertura.
+    """
+    soma = {}
+    for e in (complemento or {}).get("cashDividends") or []:
+        if (e.get("isinCode") or "").strip().upper() not in isins:
+            continue
+        d, v = _data(e.get("lastDatePrior")), _num(e.get("rate"))
+        if d is not None and v:
+            soma[d] = soma.get(d, 0) + v
+    if soma:
+        limite = max(soma) - timedelta(days=400)
+        soma = {d: v for d, v in soma.items() if d >= limite}
+    return soma
+
+
+def conferir_site(linhas, recentes, papel):
+    """
+    Confere o site contra os proventos EXATOS da B3 (últimos ~12 meses).
+
+    Alguns sites chamam de "data com" a data ex (o pregão seguinte): os dois
+    alinhamentos são testados e fica o que mais acerta. O site só é aceito se
+    acertar data e valor em pelo menos 90% das datas da B3 (tolerância de 1
+    centavo ou 1%, pelo arredondamento) e não inventar mais que uma data no
+    mesmo período.
+
+    Devolve (aceito, ex_corrigida, acertos, total, sobras, antigos), em que
+    antigos = {data-com: (valor, tipos)} anteriores ao bloco da B3.
+    """
+    soma, tipos = {}, {}
+    for l in linhas:
+        d = pd.Timestamp(l["data"])
+        soma[d] = soma.get(d, 0) + l["valor"]
+        tipos.setdefault(d, set()).add(str(l.get("tipo") or "provento"))
+    pregoes = sorted(papel["data"]) if papel is not None else []
+
+    def anterior(d):
+        pos = bisect.bisect_left(pregoes, d)
+        return pregoes[pos - 1] if pos > 0 else None
+
+    ini_b3, fim_b3 = min(recentes), max(recentes)
+    melhor = None
+    for desloc in (0, 1):
+        mapa, tip = {}, {}
+        for d, v in soma.items():
+            dc = d if desloc == 0 else anterior(d)
+            if dc is None:
+                continue
+            mapa[dc] = mapa.get(dc, 0) + v
+            tip.setdefault(dc, set()).update(tipos[d])
+        acertos = sum(1 for d, v in recentes.items()
+                      if d in mapa and abs(mapa[d] - v) <= max(0.011, 0.01 * v))
+        sobras = sum(1 for d in mapa if ini_b3 <= d <= fim_b3 and d not in recentes)
+        chave = (acertos, -sobras)
+        if melhor is None or chave > melhor[0]:
+            melhor = (chave, desloc, mapa, tip, acertos, sobras)
+    _, desloc, mapa, tip, acertos, sobras = melhor
+    total = len(recentes)
+    aceito = total >= 3 and acertos >= 0.9 * total and sobras <= 1
+    antigos = {d: (v, tip[d]) for d, v in mapa.items() if d < ini_b3}
+    return aceito, bool(desloc), acertos, total, sobras, antigos
+
+
+def _proventos_do_site(resultado, recentes, papel, inicio, site_padrao):
+    """
+    Eventos com os proventos antigos vindos do site, se ele passar na
+    conferência. Devolve (eventos, mensagem, aceito).
+    """
+    site = (resultado or {}).get("site") if isinstance(resultado, dict) else urlparse(site_padrao).netloc
+    if isinstance(resultado, Exception):
+        return [], f"o site {site} não respondeu ({resultado})", False
+    if resultado.get("proibido"):
+        return [], f"o robots.txt de {site} não permite ler {resultado['url']}", False
+    if not resultado.get("linhas"):
+        return [], f"{site} não tem tabela de proventos para este papel", False
+    aceito, ex_corrigida, acertos, total, sobras, antigos = conferir_site(
+        resultado["linhas"], recentes, papel)
+    if not aceito:
+        return [], (f"{site} confere com a B3 em só {acertos} de {total} datas"
+                    + (f" e tem {sobras} data(s) a mais" if sobras else "")
+                    + " — NÃO usado"), False
+    linhas = []
+    for d, (v, tipos) in sorted(antigos.items()):
+        if d < inicio:
+            continue
+        fech, _ = _fechamento_em(papel, d)
+        if fech:
+            linhas.append((d, v / fech * 100, " + ".join(sorted(tipos))))
+    eventos = _agrupar_proventos(linhas, f"site: {site}")
+    msg = (f"proventos anteriores a {_fmt(min(recentes))} completados com {site} "
+           f"(FONTE NÃO OFICIAL): {len(eventos)} data(s); conferido com a B3 em "
+           f"{acertos} de {total} datas"
+           + (" — a 'data com' do site é a data ex, corrigida para a data-com" if ex_corrigida else ""))
+    return eventos, msg, True
 
 
 # =========================================================================== #
@@ -1146,7 +1341,8 @@ def _executar(tarefas, progress, rotulo, andamento=None):
 
 
 def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
-                    tabela_fii_extra=None, progress=None, rede=None):
+                    tabela_fii_extra=None, progress=None, rede=None,
+                    site_nao_oficial=None):
     """
     Ajusta as séries de preço da B3 por eventos corporativos.
 
@@ -1156,6 +1352,9 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                 quatot e fatcot).
     proventos : True ajusta também dividendos, JCP e rendimentos (retorno
                 total); False só desdobramentos, grupamentos e bonificações.
+    site_nao_oficial : endereço de um site (ex.: SITE_PADRAO) para completar
+                o histórico de proventos que as fontes oficiais não têm. Só é
+                usado depois de conferido com a B3. None = não usar.
 
     Devolve (wide_ajustado, relatorio). Um papel cuja fonte não responde
     segue SEM ajuste e aparece em relatorio['falhas'] — nunca é ajustado pela
@@ -1245,6 +1444,27 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                     # gravado, e a próxima importação procura de novo.
                     motivo_sem_historico[ticker] = "busca_falhou"
             baixado.update(_executar(novas, progress, "Fundos.NET", andamento))
+    # 1ª fase (c) — site não oficial, só para quem ficaria com os ~12 meses
+    # da B3 (FI-Infra, FIP...). Ações (histórico da B3) e fundos com
+    # Fundos.NET não são consultados.
+    if proventos and site_nao_oficial:
+        tarefas_site = {}
+        for ticker in papeis:
+            empresa, _ = empresa_e_classe(ticker)
+            res = baixado.get(("b3", empresa))
+            if not empresa or not res or isinstance(res, Exception):
+                continue
+            comp, hist, _ = res
+            fnet = baixado.get(("fnet", ticker))
+            if hist or (ticker in tabela_fii and fnet is not None
+                        and not isinstance(fnet, Exception)):
+                continue
+            recentes = _bloco_recente_b3(comp, _isins_do_papel(bruto, ticker))
+            if recentes and min(recentes) > inicio:
+                tarefas_site[("site", ticker)] = partial(_dados_site, rede, cache,
+                                                         site_nao_oficial, ticker, fim)
+        baixado.update(_executar(tarefas_site, progress, "site não oficial", andamento))
+
     if hasattr(rede, "fechar"):
         rede.fechar()
     print(f"  Eventos corporativos: consultas concluídas em {time.time() - t0:.0f} s")
@@ -1252,7 +1472,7 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
     # 2ª fase — cálculo, papel por papel (sem rede)
     for ticker in papeis:
         avisos = []
-        info = {"eventos": [], "avisos": avisos, "notas": notas.get(ticker, []),
+        info = {"eventos": [], "avisos": avisos, "notas": notas.setdefault(ticker, []),
                 "ret_antes": None, "ret_depois": None}
         rel["papeis"][ticker] = info
         serie = pd.to_numeric(saida[ticker], errors="coerce")
@@ -1313,20 +1533,23 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
                 eventos += proventos_da_b3(historico, complemento, classe, isins,
                                            papel, inicio, fim, avisos)
                 if not historico and (complemento or {}).get("cashDividends"):
-                    # A B3 guarda ~12 meses; uma linha antiga solta (o JURO11
-                    # tem uma de 2022) não significa que o período está coberto.
-                    recentes = [_data(e.get("lastDatePrior"))
-                                for e in complemento["cashDividends"]
-                                if (e.get("isinCode") or "").strip().upper() in isins]
-                    recentes = [d for d in recentes if d is not None]
-                    if recentes:
-                        recentes = [d for d in recentes if d >= max(recentes) - timedelta(days=400)]
+                    recentes = _bloco_recente_b3(complemento, isins)
                     if recentes and min(recentes) > inicio:
-                        avisos.append(
-                            f"só há proventos da B3 a partir de {_fmt(min(recentes))}; "
-                            f"os anteriores NÃO foram ajustados"
-                            + _motivo_12_meses(motivo_sem_historico.get(ticker), isins,
-                                               complemento))
+                        resultado_site = baixado.get(("site", ticker))
+                        usado, msg_site = False, ""
+                        if resultado_site is not None:
+                            evs_site, msg_site, usado = _proventos_do_site(
+                                resultado_site, recentes, papel, inicio, site_nao_oficial)
+                            eventos += evs_site
+                        if usado:
+                            info["notas"].append(msg_site)
+                        else:
+                            avisos.append(
+                                f"só há proventos da B3 a partir de {_fmt(min(recentes))}; "
+                                f"os anteriores NÃO foram ajustados"
+                                + _motivo_12_meses(motivo_sem_historico.get(ticker), isins,
+                                                   complemento)
+                                + (f"; site não oficial: {msg_site}" if msg_site else ""))
 
         # 5) Aplicação: preços até a data-com (inclusive) × fator
         aplicados = [ev for ev in eventos if inicio <= ev["data_com"] < fim]
