@@ -6,6 +6,8 @@ só guarda os dos últimos ~12 meses). Foi montada a partir dos próprios avisos
 de rendimento publicados no Fundos.NET entre out/2025 e out/2026: o aviso
 traz o CNPJ do fundo e o código da cota na bolsa.
 
+Inclui também Fiagros (fundos do agronegócio), que publicam o mesmo aviso.
+
 FUNDO FALTANDO? O próprio programa resolve: procura o CNPJ no Fundos.NET,
 confere e o guarda no arquivo fii_cnpj.csv da pasta de dados do programa
 (colunas  codigo;cnpj), lido a cada importação e com prioridade sobre esta
@@ -231,6 +233,7 @@ TABELA = {
     'KGUJ11': ('61305996000138', 'KINEA GUARARA JD FII'),
     'KISU11': ('36669660000107', 'KILIMA FIC FII'),
     'KIVO11': ('42273325000198', 'KILIMA VOLKANO RECEBIVEIS IMOBILIARIOS FII'),
+    'KNCA11': ('41745701000137', 'KINEA CRÉDITO AGRO FIAGRO'),
     'KNCR11': ('16706958000132', 'KINEA RENDIMENTOS IMOBILIÁRIOS FII'),
     'KNGR11': ('61305758000122', 'KINEA GUARARA FII'),
     'KNHF11': ('42754342000147', 'KINEA HEDGE FUND FII'),
@@ -352,6 +355,7 @@ TABELA = {
     'RRES11': ('65923811000100', 'FII RIVIERA RESIDENCIAL RESPONSABILIDADE LIMITADA'),
     'RSPD11': ('19249989000108', 'RB CAPITAL DESENVOLVIMENTO RESIDENCIAL III - FII'),
     'RTEL16': ('43862625000175', 'BRC II FUNDO DE INVESTIMENTO IMOBILIÁRIO RESP LIMITADA'),
+    'RZAG11': ('40413979000144', 'FIAGRO RIZA AGRO - IMOBILIÁRIO'),
     'RZAK11': ('36642219000131', 'RIZA AKIN FII'),
     'RZAT11': ('28267696000136', 'RIZA ARCTIUM FII'),
     'RZLC11': ('56212023000114', 'RIZA LECCI FII'),
@@ -414,6 +418,7 @@ TABELA = {
     'VCRR11': ('40041723000153', 'PATRIA RENDA RESIDENCIAL FII'),
     'VERE11': ('08693497000182', 'FII VEREDA'),
     'VGHF11': ('36771692000119', 'VALORA HEDGE FUND FII'),
+    'VGIA11': ('41081088000109', 'VALORA CRA FIAGRO'),
     'VGII11': ('52649680000172', 'VALORA CRI II FII'),
     'VGIP11': ('34197811000146', 'VALORA CRI ÍNDICE FII'),
     'VGIR11': ('29852732000191', 'VALORA RE III FII'),
