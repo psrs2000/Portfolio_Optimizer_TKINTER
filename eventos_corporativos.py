@@ -78,6 +78,10 @@ CABECALHOS = {
 }
 
 PAUSA = 0.25                   # segundos entre pedidos (cortesia com o servidor)
+# Tipos de fundo da busca do Fundos.NET que publicam o aviso estruturado de
+# "Rendimentos e Amortizações" (mesmo XML): FII, Fiagro e FIDC. FI-Infra e FIP
+# não publicam lá.
+TIPOS_FNET = ("1", "11", "2")
 PARALELO = 4                   # consultas simultâneas (uma por empresa/fundo)
 PARALELO_FNET = 6              # avisos do Fundos.NET baixados ao mesmo tempo (no total)
 TEMPO_LIMITE = (10, 30)        # segundos: para conectar / para receber a resposta
@@ -217,6 +221,7 @@ class Rede:
         self._trava = threading.Lock()
         self._fnet_cookies = None
         self._fnet_cabecalhos = {}
+        self._tipo_fnet = {}          # CNPJ -> tipo de fundo em que ele publica
         self._pool = None
 
     def pool(self):
@@ -275,8 +280,15 @@ class Rede:
         'cashDividends'}, ou None se a B3 não conhece o código.
         Tenta o cadastro de empresas e, se vier vazio, o de fundos.
         """
-        dados = self._json(URL_COMPLEMENTO_EMPRESA + _b64(
-            {"issuingCompany": empresa, "language": "pt-br"}))
+        try:
+            dados = self._json(URL_COMPLEMENTO_EMPRESA + _b64(
+                {"issuingCompany": empresa, "language": "pt-br"}))
+        except FonteIndisponivel as e:
+            # Para alguns fundos (ex.: RBRY11) o cadastro de EMPRESAS devolve
+            # uma página em vez de JSON; o de FUNDOS ainda pode responder.
+            erro_empresa, dados = e, None
+        else:
+            erro_empresa = None
         item = dados[0] if isinstance(dados, list) and dados else dados
         if isinstance(item, dict) and (item.get("stockDividends") or item.get("cashDividends")
                                        or item.get("tradingName")):
@@ -287,12 +299,16 @@ class Rede:
             dados = self._json(URL_COMPLEMENTO_FUNDO + _b64(
                 {"cnpj": "0", "identifierFund": empresa, "typeFund": 7}))
         except FonteIndisponivel:
+            if erro_empresa is not None:
+                raise erro_empresa
             return None
         item = dados[0] if isinstance(dados, list) and dados else dados
         if isinstance(item, dict) and (item.get("stockDividends") or item.get("cashDividends")):
             return {"tradingName": (item.get("fund") or "").strip(),
                     "stockDividends": item.get("stockDividends") or [],
                     "cashDividends": item.get("cashDividends") or []}
+        if erro_empresa is not None:
+            raise erro_empresa
         return None
 
     def proventos(self, nome_pregao):
@@ -341,14 +357,31 @@ class Rede:
     def fnet_documentos(self, cnpj, d_ini, d_fim, limite=2000):
         """
         Avisos de 'Rendimentos e Amortizações' entregues no período: do fundo
-        com esse CNPJ, ou de TODOS os FIIs se cnpj for None.
+        com esse CNPJ, ou de TODOS os FIIs, Fiagro e FIDC se cnpj for None.
+
+        A busca do Fundos.NET exige o tipo de fundo. Com CNPJ, tenta-se FII,
+        depois Fiagro, depois FIDC, e o tipo que respondeu fica lembrado.
         """
+        if cnpj is None:
+            docs = []
+            for tipo in TIPOS_FNET:
+                docs += self._fnet_buscar(None, tipo, d_ini, d_fim, limite)
+            return docs
+        conhecido = self._tipo_fnet.get(cnpj)
+        for tipo in ([conhecido] if conhecido else TIPOS_FNET):
+            docs = self._fnet_buscar(cnpj, tipo, d_ini, d_fim, limite)
+            if docs:
+                self._tipo_fnet[cnpj] = tipo
+                return docs
+        return []
+
+    def _fnet_buscar(self, cnpj, tipo, d_ini, d_fim, limite):
         self._abrir_fnet()
         docs, inicio, total, contador = [], 0, None, 0
         while True:
             contador += 1
             params = {"d": str(contador), "s": str(inicio), "l": "100",
-                      "o[0][dataEntrega]": "desc", "tipoFundo": "1",
+                      "o[0][dataEntrega]": "desc", "tipoFundo": tipo,
                       "idCategoriaDocumento": "14", "idTipoDocumento": "41",
                       "idEspecieDocumento": "0",
                       "dataInicial": _fmt(d_ini), "dataFinal": _fmt(d_fim),
@@ -1127,7 +1160,7 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
             isins = _isins_do_papel(bruto, ticker)
             comp = res[0]
             nome = comp.get("tradingName") or ""
-            parece_fii = (_nome_normal(nome).split(" ")[0] in ("FII", "FIAGRO", "FI-INFRA", "FIINFRA")
+            parece_fii = (_nome_normal(nome).split(" ")[0] in ("FII", "FIAGRO", "FIDC", "FI-INFRA", "FIINFRA")
                           or any((e.get("isinCode") or "").upper() in isins
                                  for e in comp.get("cashDividends") or []))
             if not (any("CTF" in i for i in isins) and parece_fii):
@@ -1196,11 +1229,17 @@ def ajustar_eventos(wide, bruto, proventos=True, pasta_cache=None,
         if empresa:
             resultado = baixado.get(("b3", empresa))
             if isinstance(resultado, Exception):
-                rel["falhas"][ticker] = (f"a B3 não respondeu ({resultado}) — série "
-                                         f"mantida SEM ajuste")
-                continue
-            complemento, historico, _ = resultado
-            if complemento is None:
+                if ticker not in tabela_fii:
+                    rel["falhas"][ticker] = (f"a B3 não respondeu ({resultado}) — série "
+                                             f"mantida SEM ajuste")
+                    continue
+                # Fundo com CNPJ conhecido: os rendimentos vêm do Fundos.NET de
+                # qualquer jeito; sem a B3, desdobramentos só pelo COTAHIST.
+                avisos.append(f"a B3 não respondeu ({resultado}): rendimentos só do "
+                              f"Fundos.NET e desdobramentos só pela detecção no COTAHIST")
+                resultado = (None, None, "falhou")
+            complemento, historico, situacao_b3 = resultado
+            if complemento is None and situacao_b3 != "falhou":
                 avisos.append("a B3 não tem dados complementares deste código "
                               "(ETF, BDR ou papel fora de listagem?)")
             eventos += eventos_em_acoes(complemento, isins, avisos, inicio, fim)
@@ -1346,7 +1385,7 @@ if __name__ == "__main__":
                   f"data-com {e.get('lastDatePrior')}  ISIN {e.get('isinCode')}")
         print(f"  proventos recentes (dados complementares): {len(comp['cashDividends'])}")
         cnpj = "" if descobrir else TABELA_FII_PRONTA.get(t, ("",))[0]
-        if not cnpj and _nome_normal(comp["tradingName"]).startswith(("FII", "FIAGRO")):
+        if not cnpj and _nome_normal(comp["tradingName"]).startswith(("FII", "FIAGRO", "FIDC")):
             print("  FII fora da tabela — procurando o CNPJ no Fundos.NET...")
             try:
                 achado = descobrir_cnpjs_fii(rede, {t: (comp["tradingName"], set())})

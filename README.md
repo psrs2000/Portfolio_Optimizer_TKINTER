@@ -231,7 +231,8 @@ O COTAHIST traz os preços **como foram negociados**. Num desdobramento de 1 par
 | Desdobramentos, grupamentos e bonificações | Lista oficial da B3 (desde os anos 90) |
 | Desdobramentos que faltam na lista da B3 | O próprio COTAHIST (ver abaixo) |
 | Dividendos, JCP, restituições de capital (ações) | Histórico de proventos da B3 (desde 1996), já com o percentual sobre o preço da data-com |
-| Rendimentos e amortizações de FIIs | Fundos.NET (avisos publicados pelos próprios fundos) + B3 (últimos ~12 meses) |
+| Rendimentos e amortizações de FIIs, Fiagro e FIDC listados | Fundos.NET (avisos publicados pelos próprios fundos) + B3 (últimos ~12 meses) |
+| Rendimentos de FI-Infra e FIP | Só B3 (últimos ~12 meses) — ver limites abaixo |
 | Ações antigas cotadas por lote de mil | Campo FATCOT do COTAHIST: tudo vira preço por ação |
 
 **Desdobramentos ausentes na lista da B3.** Acontece (os da Magazine Luiza em 2017 e 2019 não estão lá). O programa os encontra no COTAHIST quando três marcas aparecem no mesmo pregão: o número de distribuição muda (a B3 o muda exatamente no dia "ex"), a cotação salta x vezes (x = 2, 3, 4, 8, 10...) e a quantidade negociada passa a ser cerca de x vezes a de antes. Um tombo de mercado derruba o preço mas não multiplica a quantidade, e por isso não é confundido com desdobramento.
@@ -240,7 +241,7 @@ O COTAHIST traz os preços **como foram negociados**. Num desdobramento de 1 par
 
 **Tempo de download.** São consultas pequenas, feitas várias ao mesmo tempo: alguns segundos por papel na primeira vez. Para FIIs, é um aviso do Fundos.NET por mês do período (cerca de 36 em três anos), e o Fundos.NET costuma ser o mais lento. Durante a espera, a linha de andamento da janela mostra o que ainda está pendente (ex.: "aguardando HGLG11 12/37 avisos"), e o console registra o tempo de cada FII e as respostas lentas ou repetidas. Tudo fica guardado na pasta `cache_eventos`, dentro da pasta de dados do programa (no executável, `%APPDATA%\OtimizadorPortfolio`), e nas buscas seguintes só se baixa o que for novo — repetir a mesma importação no mesmo dia não consulta nada. São arquivos pequenos e não são apagados ao fechar.
 
-**FIIs e a tabela de CNPJs — mantida pelo próprio programa.** A B3 só guarda os rendimentos de FII dos últimos ~12 meses; os anteriores vêm do Fundos.NET, que é organizado por **CNPJ do fundo**. O programa já traz uma tabela com cerca de 440 FIIs (`tabela_fii_cnpj.py`). Quando aparece um FII que **não está nela**, o programa:
+**FIIs, Fiagro e a tabela de CNPJs — mantida pelo próprio programa.** A B3 só guarda os rendimentos de FII dos últimos ~12 meses; os anteriores vêm do Fundos.NET, que é organizado por **CNPJ do fundo**. O programa já traz uma tabela com cerca de 440 FIIs (`tabela_fii_cnpj.py`). Quando aparece um FII que **não está nela**, o programa:
 
 1. procura, na lista de avisos de rendimento recentes de todos os FIIs no Fundos.NET, os do fundo com o mesmo nome de pregão da B3;
 2. baixa um desses avisos e **confere** que ele cita o código (ou o ISIN) do papel — um nome parecido nunca basta;
@@ -263,6 +264,8 @@ HGLG11;11728688000147
 - O JCP entra pelo valor **bruto** — como fazem a B3, o Yahoo e o Excel.
 - Bonificações pequenas (ex.: 5%) que faltem na lista da B3 não são detectadas pelo COTAHIST: um salto de 5% não se distingue de um pregão comum.
 - ETFs e BDRs: os desdobramentos são tratados; proventos, quando a B3 os tiver.
+- **FI-Infra (KDIF11, BDIF11, CDII11, JURO11, IFRA11...) e FIP (XPIE11...): só os rendimentos dos últimos ~12 meses** são ajustados, e o relatório avisa. Esses fundos não publicam o aviso estruturado no Fundos.NET, e a B3 só guarda 12 meses. Foram investigados: (1) a página de eventos de fundos da B3 — usa a mesma consulta, 12 meses; (2) o informe diário da CVM — com o CNPJ certo, a queda da cota na data-com reproduz o rendimento com erro de ~0,1 ponto (CDII11 e JURO11), mas é uma estimativa, o CNPJ não pode ser descoberto automaticamente com segurança (muitos FI-Infra pagam ~1% no fim de cada mês) e o FIP não informa cota diária; (3) sites de terceiros — descartados por não serem fonte oficial. Fica em aberto até haver uma fonte definitiva.
+- Se a B3 não responder para um FII ou Fiagro cujo CNPJ é conhecido, ele ainda recebe os rendimentos do Fundos.NET (os desdobramentos ficam só com a detecção pelo COTAHIST), e o relatório avisa.
 
 **Comparação com o Excel (STOCKHISTORY).** O Excel ajusta corretamente desdobramentos, grupamentos e bonificações, mas **só ajusta proventos de 2024 em diante** (e ainda deixa passar alguns). De 2020 a 2026, isso deixa de fora cerca de 48 pontos percentuais do retorno de BBAS3 e de VIVT3. Com os proventos marcados, a importação da B3 dá o retorno total completo; nos desdobramentos, o resultado coincide com o do Excel.
 
