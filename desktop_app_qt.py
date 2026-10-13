@@ -828,6 +828,7 @@ PREF_AJUSTAR_EVENTOS = "b3_ajustar_eventos"
 PREF_AJUSTAR_PROVENTOS = "b3_ajustar_proventos"
 PREF_SITE_NAO_OFICIAL = "b3_site_nao_oficial"
 PREF_SITE_ENDERECO = "b3_site_endereco"
+PREF_PASTA_EVENTOS = "b3_pasta_eventos"
 
 
 def _caminho_preferencias():
@@ -888,6 +889,36 @@ def pasta_cache_cvm_inicial():
         except OSError:
             continue
     return padrao     # nem o padrão pôde ser criado; o download avisará o erro
+
+
+def pasta_eventos_inicial():
+    """
+    Pasta dos dados do ajuste por eventos (cache_eventos\\ e fii_cnpj.csv) com
+    que a janela da B3 abre: a última escolhida pelo usuário, se ainda existir;
+    senão a pasta de dados do programa — onde esses arquivos sempre ficaram.
+    Nada é criado aqui: com o ajuste desmarcado, a pasta nem é usada.
+    """
+    escolhida = ler_preferencia(PREF_PASTA_EVENTOS, None)
+    if escolhida and os.path.isdir(escolhida):
+        return escolhida
+    return pasta_dados_usuario()
+
+
+def pasta_eventos_em_uso(texto):
+    """
+    A pasta digitada/escolhida, criada se preciso. Se não puder ser criada
+    (pendrive removido, caminho inválido), volta à pasta padrão em vez de
+    deixar o ajuste sem cache e sem a lista de CNPJs.
+    """
+    for caminho in (texto, pasta_dados_usuario()):
+        if not caminho:
+            continue
+        try:
+            os.makedirs(caminho, exist_ok=True)
+            return caminho
+        except (OSError, ValueError):      # ValueError: caractere inválido no caminho
+            continue
+    return pasta_dados_usuario()
 
 
 def promote_reference_column(df, ativo_referencia):
@@ -1354,6 +1385,23 @@ class B3ImportDialog(_PriceImportDialog):
         bl.addLayout(linha_site)
         self._linha_site = (self.site_entry, b_padrao)
 
+        # Pasta dos dados do ajuste (cache e lista de CNPJs descobertos).
+        # Apontar o .py e o .exe para a mesma pasta faz os dois compartilharem.
+        linha_pasta = QHBoxLayout()
+        rotulo_pasta = QLabel("📁 Pasta dos dados de eventos:")
+        linha_pasta.addWidget(rotulo_pasta)
+        self.eventos_entry = QLineEdit()
+        self.eventos_entry.setToolTip(
+            "Onde ficam o cache dos eventos (pasta cache_eventos) e a lista de CNPJs "
+            "de fundos descobertos pelo programa (fii_cnpj.csv). Apontar o programa .py "
+            "e o executável para a mesma pasta faz os dois usarem os mesmos dados.")
+        linha_pasta.addWidget(self.eventos_entry, 1)
+        b_pasta = QPushButton("Procurar...")
+        b_pasta.clicked.connect(self._escolher_pasta_eventos)
+        linha_pasta.addWidget(b_pasta)
+        bl.addLayout(linha_pasta)
+        self._linha_pasta = (rotulo_pasta, self.eventos_entry, b_pasta)
+
         self.hint_eventos = QLabel()
         self.hint_eventos.setStyleSheet("color: gray;")
         self.hint_eventos.setWordWrap(True)
@@ -1364,7 +1412,7 @@ class B3ImportDialog(_PriceImportDialog):
             self.chk_eventos.setEnabled(False)
             self.chk_proventos.setEnabled(False)
             self.chk_site.setEnabled(False)
-            for w in self._linha_site:
+            for w in self._linha_site + self._linha_pasta:
                 w.setEnabled(False)
             self.hint_eventos.setText(
                 "Indisponível: não foi possível carregar o módulo "
@@ -1378,6 +1426,9 @@ class B3ImportDialog(_PriceImportDialog):
         if endereco in eventsrc.SITES_PADRAO_ANTERIORES:   # padrão antigo, não escolha do usuário
             endereco = eventsrc.SITE_PADRAO
         self.site_entry.setText(endereco)
+        self.eventos_entry.setText(pasta_eventos_inicial())
+        self.eventos_entry.editingFinished.connect(
+            lambda: gravar_preferencia(PREF_PASTA_EVENTOS, self.eventos_entry.text().strip()))
         self.chk_eventos.toggled.connect(self._mudou_ajuste)
         self.chk_proventos.toggled.connect(self._mudou_ajuste)
         self.chk_site.toggled.connect(self._ligou_site)
@@ -1402,6 +1453,13 @@ class B3ImportDialog(_PriceImportDialog):
                 "Cabe a quem usa respeitar os termos do site escolhido.\n\n"
                 "No relatório, esses proventos aparecem marcados com o nome do site.")
 
+    def _escolher_pasta_eventos(self):
+        pasta = QFileDialog.getExistingDirectory(
+            self, "Pasta dos dados de eventos", self.eventos_entry.text())
+        if pasta:
+            self.eventos_entry.setText(os.path.normpath(pasta))
+            gravar_preferencia(PREF_PASTA_EVENTOS, os.path.normpath(pasta))
+
     def _mudou_ajuste(self, *_):
         """Grava a escolha e atualiza a explicação."""
         ligado = self.chk_eventos.isChecked()
@@ -1410,6 +1468,8 @@ class B3ImportDialog(_PriceImportDialog):
         self.chk_site.setEnabled(com_site)
         for w in self._linha_site:
             w.setEnabled(com_site and self.chk_site.isChecked())
+        for w in self._linha_pasta:
+            w.setEnabled(ligado)
         gravar_preferencia(PREF_AJUSTAR_EVENTOS, ligado)
         gravar_preferencia(PREF_AJUSTAR_PROVENTOS, self.chk_proventos.isChecked())
         gravar_preferencia(PREF_SITE_NAO_OFICIAL, self.chk_site.isChecked())
@@ -1447,10 +1507,11 @@ class B3ImportDialog(_PriceImportDialog):
         if EVENTOS_OK and self.chk_eventos.isChecked() and len(wide.columns) > 1:
             self.progress_label = "Eventos corporativos"
             try:
+                pasta = pasta_eventos_em_uso(self.eventos_entry.text().strip())
                 wide, rel = eventsrc.ajustar_eventos(
                     wide, df, proventos=self.chk_proventos.isChecked(),
-                    pasta_cache=os.path.join(pasta_dados_usuario(), "cache_eventos"),
-                    tabela_fii_extra=os.path.join(pasta_dados_usuario(), "fii_cnpj.csv"),
+                    pasta_cache=os.path.join(pasta, "cache_eventos"),
+                    tabela_fii_extra=os.path.join(pasta, "fii_cnpj.csv"),
                     progress=progress,
                     site_nao_oficial=(self.site_entry.text().strip() or None)
                     if self.chk_proventos.isChecked() and self.chk_site.isChecked() else None)
