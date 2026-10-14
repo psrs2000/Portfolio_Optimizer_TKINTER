@@ -424,11 +424,11 @@ Selecione um dos objetivos disponíveis pelo botão de rádio:
 | Minimizar Risco                     | Minimiza a volatilidade do portfólio independentemente do retorno. Ideal para perfis conservadores.                                    |
 | Minimizar Under Water               | Minimiza o **total de perdas acumuladas** do período — a soma de todos os retornos diários negativos. É uma medida de risco **assimétrica**: pune apenas queda, nunca oscilação de alta (ao contrário da volatilidade). Combina especialmente bem com a Meta de Retorno. |
 | Maximizar Inclinação/\[(1-R²)×Vol\] | Combina a inclinação com a qualidade da linearidade e a volatilidade. Penaliza ativos com retornos irregulares.                        |
-| Maximizar Qualidade da Linearidade  | Maximiza o R² da regressão do retorno acumulado. Prioriza ativos com comportamento linear e previsível.                                |
+| Maximizar Qualidade da Linearidade  | Maximiza o R² da regressão do retorno acumulado. Prioriza ativos com comportamento linear e previsível. Não depende da taxa de referência. |
 
 ### Objetivos com Taxa de Referência
 
-Os dois objetivos abaixo aparecem em uma seção separada e só ficam disponíveis quando há taxa de referência. Ambos trabalham sobre a curva do **excesso** (carteira − referência):
+Os dois objetivos abaixo aparecem em uma seção separada e só ficam disponíveis quando há taxa de referência **e não há posição vendida** (ver 6.3). Ambos trabalham sobre a curva do **excesso** (carteira − referência):
 
 | **Objetivo**                     | **Descrição**                                                                                                                        |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -575,6 +575,9 @@ Quando há posições short configuradas:
 - O otimizador distribui os 100% restantes entre os ativos long selecionados.
 - Os pesos negativos aparecem na composição do portfólio identificados como 'SHORT'.
 - O cálculo de 'Peso Atual' na tabela de composição considera apenas o valor das posições long para normalização.
+- **A referência deixa de ser descontada.** A curva da carteira (comprados − vendidos) já é o excesso; descontar a taxa de referência de novo contaria o índice duas vezes. Por isso, com posição vendida, a otimização e a aba Resultados tratam a carteira como **sem referência**: Sharpe e Sortino não descontam nada, e as linhas Taxa Ref e Excesso aparecem zeradas (o Excesso é igual ao Total). O gráfico mostra só a curva da carteira.
+- **Os objetivos com taxa de referência ficam indisponíveis** (Linearidade do Excesso e Sharpe do Excesso). Se um deles estava escolhido, o programa volta para 'Maximizar Sharpe Ratio'; ao desligar os vendidos, eles reaparecem.
+- A Auto-Otimização ainda não segue essas duas regras.
 
 # 7\. Aba Ranking - Classificação de Ativos
 

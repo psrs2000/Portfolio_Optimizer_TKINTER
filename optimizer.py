@@ -614,11 +614,9 @@ class PortfolioOptimizer:
                     return 1e10
                     
             elif objective_type == 'quality_linear':
-                # NOVA: Minimizar [Vol × (1-R²)]/R² 
-                # Só funciona se temos taxa livre de risco detectada
-                if not hasattr(self, 'risk_free_cumulative') or self.risk_free_cumulative is None:
-                    return 1e10  # Penalizar se não tem taxa livre
-                
+                # Minimizar [Vol × (1-R²)]/R² da curva da CARTEIRA. Não usa a
+                # referência (antes exigia uma e, sem ela, devolvia uma
+                # constante: o solver não saía do lugar).
                 # Maximizar "qualidade da linearidade" 
                 if metrics['volatility'] > 0 and metrics['r_squared'] > 0.001:  # R² > 0.1%
                     # Fórmula: [Vol × (1-R²)]/R²
@@ -865,8 +863,7 @@ class PortfolioOptimizer:
                 else:
                     return 1e10
             elif objective_type == 'quality_linear':
-                if not hasattr(self, 'risk_free_cumulative') or self.risk_free_cumulative is None:
-                    return 1e10
+                # Não depende da referência (ver optimize_portfolio).
                 if metrics['volatility'] > 0 and metrics['r_squared'] > 0.001:
                     quality_metric = (metrics['volatility'] * (1 - metrics['r_squared'])) / metrics['r_squared']
                     return quality_metric

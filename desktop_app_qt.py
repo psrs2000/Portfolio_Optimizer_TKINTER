@@ -2960,7 +2960,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                     assets_used_in_optimization = selected_assets
 
                 optimizer_to_use = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
-                                                      risk_free_column=self._coluna_referencia())
+                                                      risk_free_column=self._referencia_da_carteira())
             else:
                 optimizer_to_use = self.optimizer
 
@@ -3584,6 +3584,22 @@ class PortfolioOptimizerGUI(QMainWindow):
         """
         return self.risk_free_column_name if self.has_risk_free else None
 
+    def _vendido_ativo(self):
+        """Há posição vendida configurada e habilitada na aba Short/Hedge?"""
+        return bool(getattr(self, 'use_short', None) and self.use_short.get()
+                    and getattr(self, 'short_weights', None))
+
+    def _referencia_da_carteira(self):
+        """
+        Referência usada na otimização manual e na aba Resultados.
+
+        Com posição vendida, a curva da carteira (comprados − vendidos) JÁ é o
+        excesso: descontar a referência de novo seria contar o índice duas
+        vezes. Nesse caso a carteira é tratada como sem referência (Sharpe e
+        Sortino sem desconto; Taxa Ref e Excesso aparecem zerados).
+        """
+        return None if self._vendido_ativo() else self._coluna_referencia()
+
     def update_objective_options(self):
         """Atualizar opções de objetivo baseado na taxa livre"""
         _clear_layout(self.risk_free_obj_layout)
@@ -3597,10 +3613,18 @@ class PortfolioOptimizerGUI(QMainWindow):
         for obj in self.risk_free_objectives:
             self.objective_buttons.pop(obj, None)
             self.objective_var.buttons.pop(obj, None)
-        if escolhido in self.risk_free_objectives and not self.has_risk_free:
+        com_referencia = self.has_risk_free and not self._vendido_ativo()
+        if escolhido in self.risk_free_objectives and not com_referencia:
             self.objective_buttons["Maximizar Sharpe Ratio"].setChecked(True)
 
-        if self.has_risk_free:
+        if self.has_risk_free and not com_referencia:
+            aviso = QLabel("Objetivos com Taxa de Referência: indisponíveis com posição "
+                           "vendida — a carteira (comprados − vendidos) já é o excesso.")
+            aviso.setStyleSheet("color: gray;")
+            aviso.setWordWrap(True)
+            self.risk_free_obj_layout.addWidget(aviso)
+
+        if com_referencia:
             sep = QFrame()
             sep.setFrameShape(QFrame.HLine)
             self.risk_free_obj_layout.addWidget(sep)
@@ -4039,6 +4063,8 @@ class PortfolioOptimizerGUI(QMainWindow):
         popup.exec_()
 
     def update_short_summary(self):
+        if hasattr(self, 'risk_free_obj_layout'):
+            self.update_objective_options()
         _clear_layout(self.short_summary_layout)
 
         if not self.short_weights:
@@ -4060,6 +4086,8 @@ class PortfolioOptimizerGUI(QMainWindow):
 
     def toggle_short_selling(self):
         self.update_short_widgets()
+        if hasattr(self, 'risk_free_obj_layout'):
+            self.update_objective_options()
 
     def get_individual_constraints(self):
         if not self.use_individual_constraints.get():
@@ -4244,7 +4272,7 @@ class PortfolioOptimizerGUI(QMainWindow):
             QApplication.processEvents()
 
             self.optimizer = PortfolioOptimizer(self.df, all_assets,
-                                                risk_free_column=self._coluna_referencia())
+                                                risk_free_column=self._referencia_da_carteira())
 
             status_label.setText("Configurando parâmetros...")
             QApplication.processEvents()
@@ -4444,7 +4472,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                     assets_used_in_optimization = selected_assets
 
                 optimizer_valid = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
-                                                     risk_free_column=self._coluna_referencia())
+                                                     risk_free_column=self._referencia_da_carteira())
 
                 n_assets_optimization = len(self.result['weights'])
                 n_assets_validation = optimizer_valid.returns_data.shape[1] if len(optimizer_valid.returns_data.shape) > 1 else 1
@@ -4735,7 +4763,7 @@ Isso ajuda a detectar:
                     assets_used_in_optimization = selected_assets
 
                 optimizer_extended = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
-                                                        risk_free_column=self._coluna_referencia())
+                                                        risk_free_column=self._referencia_da_carteira())
 
                 if self.has_risk_free and hasattr(self.optimizer, 'risk_free_rate_total'):
                     final_risk_free_rate = self.optimizer.risk_free_rate_total
