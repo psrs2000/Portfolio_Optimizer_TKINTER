@@ -158,7 +158,7 @@ class PortfolioOptimizer:
 	    if annual_return is None:          # curva abaixo de -100%: não há taxa
 		    annual_return = float('nan')
 
-	    sharpe_ratio = excess_return / vol if vol > 0 else 0
+	    sharpe_ratio = self._sharpe_anual(gv_final, risk_free_rate, vol)
 	    return {
 		    'volatility': vol,
 		    'gv_final': gv_final,
@@ -169,6 +169,24 @@ class PortfolioOptimizer:
 		    'total_under_water': total_under_water,
 		    'abs_under_water': abs_under_water,
 	    }
+
+    def _sharpe_anual(self, gv_final, risk_free_rate, vol):
+	    """
+	    Sharpe ANUALIZADO: (retorno anualizado − referência anualizada) / vol.
+
+	    É o mesmo número exibido na aba Resultados, de modo que o solver
+	    maximiza exatamente o que o usuário vê. Os dois retornos são
+	    anualizados de forma composta em 252 pregões contados (anualizar).
+	    Uma curva abaixo de −100% não tem taxa anual: vale −100%, o pior
+	    possível, para o solver se afastar dela.
+	    """
+	    if vol <= 0:
+		    return 0
+	    anual = anualizar(gv_final, self.n_dias)
+	    ref_anual = anualizar(risk_free_rate, self.n_dias)
+	    anual = -1.0 if anual is None else anual
+	    ref_anual = -1.0 if ref_anual is None else ref_anual
+	    return (anual - ref_anual) / vol
 
     def _lin_slope_r2(self, y):
 	    """
@@ -243,10 +261,10 @@ class PortfolioOptimizer:
 	    # GV_final: Último valor da coluna GV (retorno acumulado total)
 	    gv_final = portfolio_cumulative[-1]
 	    
-	    # HC8: Sharpe ratio CORRIGIDO com taxa livre de risco
-	    # Fórmula: (Retorno Total - Taxa Livre de Risco) / Volatilidade
+	    # Sharpe ANUALIZADO — o mesmo número exibido na aba Resultados:
+	    # (retorno anualizado − referência anualizada) / volatilidade anualizada.
 	    excess_return = gv_final - risk_free_rate
-	    sharpe_ratio = excess_return / portfolio_vol if portfolio_vol > 0 else 0
+	    sharpe_ratio = self._sharpe_anual(gv_final, risk_free_rate, portfolio_vol)
 	    
 	    # NOVO: Sortino Ratio
 	    # Downside Deviation = semi-desvio-padrão clássico de Sortino & Price:

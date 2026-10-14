@@ -419,7 +419,7 @@ Selecione um dos objetivos disponíveis pelo botão de rádio:
 
 | **Objetivo**                        | **Descrição**                                                                                                                          |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Maximizar Sharpe Ratio              | Maximiza o retorno excedente à taxa de referência por unidade de risco. Objetivo mais comum para carteiras balanceadas.                |
+| Maximizar Sharpe Ratio              | Maximiza o retorno excedente à taxa de referência por unidade de risco: (retorno anualizado − referência anualizada) ÷ volatilidade anualizada — o mesmo Sharpe exibido na aba Resultados. Objetivo mais comum para carteiras balanceadas. |
 | Maximizar Sortino Ratio             | Semelhante ao Sharpe, mas penaliza apenas a volatilidade de queda (downside). Não pune oscilações de alta — útil quando a preocupação é o risco de perda.  |
 | Minimizar Risco                     | Minimiza a volatilidade do portfólio independentemente do retorno. Ideal para perfis conservadores.                                    |
 | Minimizar Under Water               | Minimiza o **total de perdas acumuladas** do período — a soma de todos os retornos diários negativos. É uma medida de risco **assimétrica**: pune apenas queda, nunca oscilação de alta (ao contrário da volatilidade). Combina especialmente bem com a Meta de Retorno. |
