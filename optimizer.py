@@ -9,6 +9,24 @@ DETECTAR_REFERENCIA = object()
 # Palavras que denunciam uma coluna de referência, quando é preciso adivinhar.
 TERMOS_REFERENCIA = ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']
 
+PREGOES_ANO = 252
+
+
+def anualizar(total, dias):
+    """
+    Anualização COMPOSTA na base de 252 pregões: (1 + total)^(252/dias) - 1.
+
+    total : resultado do período tirado direto da curva base zero (subtração
+            entre dois pontos da curva).
+    dias  : nº de PREGÕES do período — contados, nunca por subtração de datas.
+
+    Devolve None quando a conta não existe: período sem pregões, ou
+    1 + total <= 0 (perda acima de 100 pontos, possível numa curva de excesso).
+    """
+    if dias is None or dias <= 0 or total is None or 1 + total <= 0:
+        return None
+    return (1 + total) ** (PREGOES_ANO / dias) - 1
+
 
 class PortfolioOptimizer:
     def __init__(self, returns_data, selected_assets=None,
@@ -91,7 +109,11 @@ class PortfolioOptimizer:
         self.assets = self.returns_data.columns.tolist()
         self.n_assets = len(self.assets)
         self.n_periods = len(self.returns_data)
-        
+        # Pregões do período = nº de VARIAÇÕES: a 1ª linha é o dia-base da
+        # base zero (variação nula) e não conta — como na planilha original
+        # (Dias = CONT.VALORES - 1).
+        self.n_dias = max(self.n_periods - 1, 1)
+
         print(f"Otimizador inicializado com {self.n_assets} ativos selecionados e {self.n_periods} períodos")
         if self.risk_free_rate_total > 0:
             print(f"Taxa livre de risco detectada: {self.risk_free_rate_total:.2%}")
@@ -132,7 +154,9 @@ class PortfolioOptimizer:
 	    total_under_water = np.sum(downside_returns)
 	    abs_under_water = abs(total_under_water)
 
-	    annual_return = (1 + gv_final) ** (252 / self.n_periods) - 1
+	    annual_return = anualizar(gv_final, self.n_dias)
+	    if annual_return is None:          # curva abaixo de -100%: não há taxa
+		    annual_return = float('nan')
 
 	    sharpe_ratio = excess_return / vol if vol > 0 else 0
 	    return {
@@ -248,7 +272,9 @@ class PortfolioOptimizer:
 	    abs_under_water = abs(total_under_water)
 	    
 	    # Retorno anualizado (para comparação)
-	    annual_return = (1 + gv_final) ** (252 / self.n_periods) - 1
+	    annual_return = anualizar(gv_final, self.n_dias)
+	    if annual_return is None:          # curva abaixo de -100%: não há taxa
+		    annual_return = float('nan')
 	    
 	    # VaR (Value at Risk) - Método Paramétrico
 	    # VaR diário - AGORA USANDO RETORNOS PERCENTUAIS
@@ -493,8 +519,8 @@ class PortfolioOptimizer:
         - RELATIVA (target_return): alvo = referência × (1 + meta).
           Depende da taxa de referência; se ela for zero, o alvo é zero.
         - ABSOLUTA (target_annual): meta anual independente de referência.
-          alvo = (1 + meta_anual)^(períodos/252) - 1, usando a MESMA convenção
-          de anualização do próprio otimizador (252 períodos de pregão), de
+          alvo = (1 + meta_anual)^(pregões/252) - 1, usando a MESMA convenção
+          de anualização do próprio otimizador (252 pregões, contados), de
           modo que exigir o alvo equivale exatamente a exigir
           annual_return >= meta_anual. A potência é calculada UMA vez, fora do
           laço do solver.
@@ -502,8 +528,8 @@ class PortfolioOptimizer:
         Retorna (meta_required, meta_mode) ou (None, None) se não há meta.
         """
         if target_annual is not None:
-            n = max(int(self.n_periods), 1)
-            return (1.0 + target_annual) ** (n / 252.0) - 1.0, 'absoluta'
+            n = self.n_dias
+            return (1.0 + target_annual) ** (n / PREGOES_ANO) - 1.0, 'absoluta'
         if target_return is not None:
             return risk_free_rate * (1 + target_return), 'relativa'
         return None, None

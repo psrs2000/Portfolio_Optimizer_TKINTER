@@ -42,7 +42,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit, QDialogButtonBox, QSpinBox
 )
 
-from optimizer import PortfolioOptimizer
+from optimizer import PortfolioOptimizer, anualizar
 
 # yfinance é OPCIONAL: sem ele o aplicativo funciona normalmente, apenas a
 # importação pelo Yahoo Finance fica indisponível (com aviso ao usuário).
@@ -919,6 +919,32 @@ def pasta_eventos_em_uso(texto):
         except (OSError, ValueError):      # ValueError: caractere inválido no caminho
             continue
     return pasta_dados_usuario()
+
+
+def _anual(total, pregoes):
+    """Anualização composta em 252 pregões contados (None se não existir)."""
+    return anualizar(total, pregoes)
+
+
+def _sharpe_anual(anual, ref_anual, vol):
+    """(anualizado − referência anualizada) / volatilidade; None se faltar algo."""
+    if anual is None or ref_anual is None or not vol:
+        return None
+    return (anual - ref_anual) / vol
+
+
+def _razao_texto(excesso_anual, ref_anual):
+    if excesso_anual is None or not ref_anual:
+        return "n/d"
+    return f"{excesso_anual / ref_anual * 100:.1f}%"
+
+
+def _pct(valor):
+    return "n/d" if valor is None else f"{valor:.2%}"
+
+
+def _num3(valor):
+    return "n/d" if valor is None else f"{valor:.3f}"
 
 
 def promote_reference_column(df, ativo_referencia):
@@ -4361,25 +4387,23 @@ class PortfolioOptimizerGUI(QMainWindow):
 
         metrics = self.result['metrics']
 
-        if hasattr(self, 'periodo_otimizacao') and self.periodo_otimizacao:
-            data_inicio_otim = self.periodo_otimizacao['inicio']
-            data_fim_otim = self.periodo_otimizacao['fim']
-            n_dias_otim = (data_fim_otim - data_inicio_otim).days
-        else:
-            n_dias_otim = len(self.optimizer.returns_data)
-
-        risk_free_annual = (1 + metrics['risk_free_rate']) ** (365 / n_dias_otim) - 1
-        sharpe_corrected = (metrics['annual_return'] - risk_free_annual) / metrics['volatility']
-
-        excess_annual_in = metrics['annual_return'] - risk_free_annual
-        ratio_in = f"{excess_annual_in / risk_free_annual * 100:.1f}%" if risk_free_annual != 0 else "n/d"
+        # Família das CURVAS: resultados tirados das somatórias base zero
+        # (carteira, referência e excesso = carteira − referência) e
+        # anualizados de forma composta em 252 pregões CONTADOS. O excesso é
+        # anualizado a partir da própria curva do excesso.
+        n_dias_otim = self.optimizer.n_dias
+        annual_in = _anual(metrics['gv_final'], n_dias_otim)
+        risk_free_annual = _anual(metrics['risk_free_rate'], n_dias_otim)
+        excess_annual_in = _anual(metrics['excess_return'], n_dias_otim)
+        sharpe_corrected = _sharpe_anual(annual_in, risk_free_annual, metrics['volatility'])
+        ratio_in = _razao_texto(excess_annual_in, risk_free_annual)
 
         in_sample_text = f"""🎯 RETORNOS:
   • Total: {metrics['gv_final']:.2%}
-  • Anualizado: {metrics['annual_return']:.2%}
+  • Anualizado: {_pct(annual_in)}
 
 ⚡ PERFORMANCE:
-  • Sharpe: {sharpe_corrected:.3f}
+  • Sharpe: {_num3(sharpe_corrected)}
 
 📊 RISCO:
   • Volatilidade: {metrics['volatility']:.2%}
@@ -4391,13 +4415,13 @@ class PortfolioOptimizerGUI(QMainWindow):
 
 🛡️ REFERÊNCIA:
   • Taxa Ref Período: {metrics['risk_free_rate']:.2%}
-  • Taxa Ref Anualizada: {risk_free_annual*100:.2f}
+  • Taxa Ref Anualizada: {_pct(risk_free_annual)}
   • Excesso Período: {metrics['excess_return']:.2%}
-  • Excesso Anualizado: {excess_annual_in:.2%}
+  • Excesso Anualizado: {_pct(excess_annual_in)}
   • Excesso/Ref: {ratio_in}
 
 📅 PERÍODO:
-  • Dias: {n_dias_otim}"""
+  • Pregões: {n_dias_otim}"""
 
         in_l.addWidget(self._metrics_label(in_sample_text))
         main_horizontal.addWidget(in_sample_box, 1)
@@ -4432,23 +4456,16 @@ class PortfolioOptimizerGUI(QMainWindow):
                     n_dias_otim = len(self.optimizer.returns_data)
 
                     if len(portfolio_returns_valid) > n_dias_otim:
-                        returns_valid_only = portfolio_returns_valid[n_dias_otim:]
+                        # Pregões da validação, CONTADOS: as linhas depois do
+                        # último dia da otimização (que é o dia-base dela).
+                        n_dias_valid = len(portfolio_returns_valid) - n_dias_otim
 
-                        if hasattr(self, 'periodo_otimizacao') and hasattr(self, 'periodo_analise'):
-                            data_fim_otim = self.periodo_otimizacao['fim']
-                            data_fim_analise = self.periodo_analise['fim']
-                            n_dias_valid = (data_fim_analise - data_fim_otim).days
-                        else:
-                            n_dias_valid = len(returns_valid_only)
-
-                        portfolio_total_ate_validacao = cumulative_valid[-1]
-                        portfolio_total_ate_otimizacao = cumulative_valid[n_dias_otim - 1]
-                        retorno_total_valid = (1 + portfolio_total_ate_validacao) / (1 + portfolio_total_ate_otimizacao) - 1
-
-                        if n_dias_valid > 0:
-                            annual_return_valid = (1 + retorno_total_valid) ** (365 / n_dias_valid) - 1
-                        else:
-                            annual_return_valid = 0
+                        # Família das CURVAS: o resultado da validação é a
+                        # SUBTRAÇÃO entre dois pontos da curva base zero —
+                        # fim da validação − fim da otimização —, o mesmo que
+                        # se lê no gráfico. Nada de divisão.
+                        retorno_total_valid = cumulative_valid[-1] - cumulative_valid[n_dias_otim - 1]
+                        annual_return_valid = _anual(retorno_total_valid, n_dias_valid)
 
                         portfolio_cumulative_validacao = cumulative_valid[n_dias_otim - 1:]
 
@@ -4461,51 +4478,45 @@ class PortfolioOptimizerGUI(QMainWindow):
                         else:
                             vol_valid = 0
 
-                        if hasattr(optimizer_valid, 'risk_free_cumulative') and optimizer_valid.risk_free_cumulative is not None:
-                            try:
-                                risk_free_total_ate_validacao = optimizer_valid.risk_free_cumulative.iloc[-1]
-                                risk_free_total_ate_otimizacao = optimizer_valid.risk_free_cumulative.iloc[n_dias_otim - 1]
-                                risk_free_total_valid = (1 + risk_free_total_ate_validacao) / (1 + risk_free_total_ate_otimizacao) - 1
+                        # Referência e excesso, também por SUBTRAÇÃO nas curvas.
+                        # O excesso da validação é o trecho da curva verde
+                        # (carteira − referência) e é anualizado a partir dela.
+                        risk_free_total_valid = 0.0
+                        if getattr(optimizer_valid, 'risk_free_cumulative', None) is not None:
+                            ref_curva = optimizer_valid.risk_free_cumulative.values
+                            risk_free_total_valid = ref_curva[-1] - ref_curva[n_dias_otim - 1]
+                        risk_free_annual_valid = _anual(risk_free_total_valid, n_dias_valid)
+                        excess_total_valid = retorno_total_valid - risk_free_total_valid
+                        excess_return_valid = _anual(excess_total_valid, n_dias_valid)
 
-                                if n_dias_valid > 0:
-                                    risk_free_annual_valid = (1 + risk_free_total_valid) ** (365 / n_dias_valid) - 1
-                                else:
-                                    risk_free_annual_valid = 0
-                            except Exception:
-                                risk_free_annual_valid = 0
-                        else:
-                            risk_free_annual_valid = 0
-
-                        if vol_valid > 0:
-                            sharpe_valid = (annual_return_valid - risk_free_annual_valid) / vol_valid
-                        else:
-                            sharpe_valid = 0
+                        sharpe_valid = _sharpe_anual(annual_return_valid, risk_free_annual_valid, vol_valid)
 
                         mean_daily_return = np.mean(portfolio_returns_pct_valid)
                         std_daily_return = np.std(portfolio_returns_pct_valid, ddof=0)
                         var_95_daily_valid = mean_daily_return - 1.65 * std_daily_return
 
-                        excess_return_valid = annual_return_valid - risk_free_annual_valid
-                        ratio_valid = f"{excess_return_valid / risk_free_annual_valid * 100:.1f}%" if risk_free_annual_valid != 0 else "n/d"
+                        ratio_valid = _razao_texto(excess_return_valid, risk_free_annual_valid)
 
                         out_sample_text = f"""🎯 RETORNOS:
   • Total: {retorno_total_valid:.2%}
-  • Anualizado: {annual_return_valid:.2%}
+  • Anualizado: {_pct(annual_return_valid)}
 
 ⚡ PERFORMANCE:
-  • Sharpe: {sharpe_valid:.3f}
+  • Sharpe: {_num3(sharpe_valid)}
 
 📊 RISCO:
   • Volatilidade: {vol_valid:.2%}
   • VaR 95%: {var_95_daily_valid:.2%}
 
 🛡️ REFERÊNCIA:
-  • Taxa Ref Anualizada: {risk_free_annual_valid:.2%}
-  • Excesso Anualizado: {excess_return_valid:.2%}
+  • Taxa Ref Período: {risk_free_total_valid:.2%}
+  • Taxa Ref Anualizada: {_pct(risk_free_annual_valid)}
+  • Excesso Período: {excess_total_valid:.2%}
+  • Excesso Anualizado: {_pct(excess_return_valid)}
   • Excesso/Ref: {ratio_valid}
 
 📅 PERÍODO:
-  • Dias: {n_dias_valid}"""
+  • Pregões: {n_dias_valid}"""
                     else:
                         out_sample_text = "⚠️ Período de validação muito curto\nconfigurado."
                         annual_return_valid = sharpe_valid = vol_valid = 0
@@ -4530,9 +4541,12 @@ class PortfolioOptimizerGUI(QMainWindow):
         comparison_box = QGroupBox("⚖️ COMPARAÇÃO")
         comp_l = QVBoxLayout(comparison_box)
 
-        if annual_return_valid != 0:
-            diff_return = annual_return_valid - metrics['annual_return']
-            diff_sharpe = sharpe_valid - metrics['sharpe_ratio']
+        # Compara os MESMOS números exibidos nos quadros IN e OUT (antes a
+        # diferença de Sharpe usava um Sharpe do IN-SAMPLE diferente do exibido).
+        if (annual_return_valid not in (None, 0) and annual_in is not None
+                and sharpe_valid is not None and sharpe_corrected is not None):
+            diff_return = annual_return_valid - annual_in
+            diff_sharpe = sharpe_valid - sharpe_corrected
             diff_vol = vol_valid - metrics['volatility']
 
             better_return = "📈 Out" if diff_return > 0 else "📉 In"

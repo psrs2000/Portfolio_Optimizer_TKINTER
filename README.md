@@ -688,22 +688,26 @@ Métricas calculadas sobre o período de treinamento (janela de otimização):
 | **Métrica**             | **Descrição**                                                         |
 | ----------------------- | --------------------------------------------------------------------- |
 | Retorno Total (%)       | Retorno acumulado do portfólio no período de otimização em base zero. |
-| Retorno Anualizado (%)  | Retorno total anualizado pela fórmula: (1 + R)^(365/dias) − 1.        |
+| Retorno Anualizado (%)  | Retorno total anualizado de forma composta em 252 pregões: (1 + R)^(252/pregões) − 1. |
 | Sharpe Ratio            | Excesso de retorno anualizado dividido pela volatilidade anualizada.  |
 | Volatilidade (%)        | Desvio padrão anualizado dos retornos diários (×√252).                |
 | VaR 95% Diário          | Value at Risk: perda máxima esperada em 95% dos dias (paramétrico).   |
 | CVaR 95% Diário         | Conditional VaR: perda média esperada além do VaR (tail risk).        |
 | R²                      | Qualidade da linearidade do retorno acumulado (regressão linear).     |
 | Taxa Ref Período (%)    | Retorno acumulado da taxa de referência no período.                   |
-| Taxa Ref Anualizada (%) | Taxa de referência anualizada.                                        |
-| Excesso Período (%)     | Retorno do portfólio menos o retorno da referência no período.        |
-| Excesso Anualizado (%)  | Retorno anualizado do portfólio menos a taxa de referência anualizada. |
+| Taxa Ref Anualizada (%) | Taxa de referência do período anualizada da mesma forma (252 pregões). |
+| Excesso Período (%)     | Curva do portfólio menos curva da referência (a curva verde do gráfico) no período. |
+| Excesso Anualizado (%)  | O Excesso Período anualizado a partir da própria curva do excesso: (1 + Excesso)^(252/pregões) − 1. |
 | Excesso/Ref (%)         | Excesso anualizado dividido pela taxa de referência anualizada: quanto o portfólio superou a referência em termos relativos (ex.: 50% = rendeu 50% a mais que a referência). |
-| Dias                    | Número de dias corridos no período de otimização.                     |
+| Pregões                 | Número de pregões do período (contados, sem o dia-base da base zero). |
 
 ## 8.2 Coluna OUT-OF-SAMPLE (Validação)
 
 As mesmas métricas calculadas para o período de validação, usando os MESMOS pesos otimizados na fase de treinamento. Este é o teste real de generalização do portfólio.
+
+Os resultados da validação saem **direto das curvas do gráfico**, por subtração: Total = curva do portfólio no fim da validação − curva no fim da otimização; o mesmo para a referência e para o excesso (curva verde). Assim, Total − Taxa Ref Período = Excesso Período, e uma carteira com a referência vendida a 100% mostra como Total exatamente o Excesso da mesma carteira com a referência. A anualização é a mesma do IN-SAMPLE (composta, 252 pregões contados). Volatilidade e VaR continuam pela variação diária em PU, (1 + curva hoje) / (1 + curva ontem).
+
+Quando a anualização não existe (perda acima de 100 pontos numa curva de excesso), o campo mostra **n/d**.
 
 💡 Se nenhuma janela de validação foi configurada (ou o período de validação é muito curto), esta coluna exibirá uma mensagem informativa. Configure uma data 'Fim da Análise' na aba Dados para ativar este painel.
 
