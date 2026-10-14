@@ -158,24 +158,25 @@ class PortfolioOptimizer:
 	    if annual_return is None:          # curva abaixo de -100%: não há taxa
 		    annual_return = float('nan')
 
-	    sharpe_ratio = self._sharpe_anual(gv_final, risk_free_rate, vol)
+	    sharpe_ratio = self._razao_anual(gv_final, risk_free_rate, vol)
 	    return {
 		    'volatility': vol,
 		    'gv_final': gv_final,
 		    'excess_return': excess_return,
 		    'annual_return': annual_return,
 		    'sharpe_ratio': sharpe_ratio,
-		    'sortino_ratio': excess_return / downside_dev if downside_dev > 0 else 0,
+		    'sortino_ratio': self._razao_anual(gv_final, risk_free_rate, downside_dev),
 		    'total_under_water': total_under_water,
 		    'abs_under_water': abs_under_water,
 	    }
 
-    def _sharpe_anual(self, gv_final, risk_free_rate, vol):
+    def _razao_anual(self, gv_final, risk_free_rate, vol):
 	    """
-	    Sharpe ANUALIZADO: (retorno anualizado − referência anualizada) / vol.
+	    (retorno anualizado − referência anualizada) / risco anualizado.
 
-	    É o mesmo número exibido na aba Resultados, de modo que o solver
-	    maximiza exatamente o que o usuário vê. Os dois retornos são
+	    Com a volatilidade é o Sharpe; com o downside deviation, o Sortino.
+	    O Sharpe é o mesmo número exibido na aba Resultados, de modo que o
+	    solver maximiza exatamente o que o usuário vê. Os dois retornos são
 	    anualizados de forma composta em 252 pregões contados (anualizar).
 	    Uma curva abaixo de −100% não tem taxa anual: vale −100%, o pior
 	    possível, para o solver se afastar dela.
@@ -264,7 +265,7 @@ class PortfolioOptimizer:
 	    # Sharpe ANUALIZADO — o mesmo número exibido na aba Resultados:
 	    # (retorno anualizado − referência anualizada) / volatilidade anualizada.
 	    excess_return = gv_final - risk_free_rate
-	    sharpe_ratio = self._sharpe_anual(gv_final, risk_free_rate, portfolio_vol)
+	    sharpe_ratio = self._razao_anual(gv_final, risk_free_rate, portfolio_vol)
 	    
 	    # NOVO: Sortino Ratio
 	    # Downside Deviation = semi-desvio-padrão clássico de Sortino & Price:
@@ -277,8 +278,8 @@ class PortfolioOptimizer:
 	    downside_deviation = np.sqrt(np.mean(downside_returns ** 2)) * np.sqrt(252)
 
 	    # Sortino Ratio
-	    # Usa o excesso de retorno sobre a taxa livre dividido pelo downside deviation
-	    sortino_ratio = excess_return / downside_deviation if downside_deviation > 0 else 0
+	    # Excesso ANUALIZADO sobre a referência dividido pelo downside deviation (como o Sharpe)
+	    sortino_ratio = self._razao_anual(gv_final, risk_free_rate, downside_deviation)
 
 	    # NOVO: Total Under Water — soma de todos os retornos diários negativos (<= 0).
 	    # abs_under_water = total de perdas acumuladas do período (>= 0). É a medida
