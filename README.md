@@ -624,6 +624,7 @@ O aviso aparece tanto ao calcular o ranking quanto ao iniciar a Auto-Otimizaçã
   - **📈 Peso Inclinação:** importância da tendência de alta relativa à referência. Maior peso favorece ativos com retorno consistentemente superior ao benchmark.
   - **📊 Peso Estabilidade:** importância da baixa volatilidade relativa. Maior peso favorece ativos que superam a referência de forma estável, sem grandes oscilações.
   - **🎯 Peso Correlação:** importância da correlação com a referência. Valores negativos de correlação podem indicar ativos com potencial de hedge.
+  - Padrão: Inclinação **0,33**, Estabilidade **1,00**, Correlação **0,60**.
 - Clique em **🔄 Calcular Ranking**. O resultado aparece na tabela com até 20 ativos exibidos.
 
 ## 7.3 Tabela de Resultados
@@ -777,7 +778,7 @@ A Auto-Otimização executa automaticamente centenas ou milhares de testes walk-
 
 🏆 **Os pesos do ranking também são os da aba Ranking** — Inclinação, Estabilidade e Correlação (seção 7.1). O que você ajustar lá é o que roda aqui, em cada step. O que a Auto-Otimização define por conta própria é apenas o **Score Min/Max**, que corta a lista já classificada.
 
-⚠️ **Corrigido na versão atual:** os três pesos ficavam **fixos em 0,33** dentro da Auto-Otimização, ignorando os controles da aba Ranking. Dava para ajustá-los, ver a ordem mudar na aba Ranking, rodar a Auto-Otimização e ela usar outra coisa — sem aviso. Como o padrão dos controles é exatamente 0,33 cada, **quem nunca os moveu obtém resultados idênticos aos de antes**; só muda para quem os ajustou.
+⚠️ **Corrigido na versão atual:** os três pesos ficavam **fixos em 0,33** dentro da Auto-Otimização, ignorando os controles da aba Ranking. Dava para ajustá-los, ver a ordem mudar na aba Ranking, rodar a Auto-Otimização e ela usar outra coisa — sem aviso. Na época o padrão dos controles era 0,33 cada; hoje é Inclinação 0,33, Estabilidade 1,00 e Correlação 0,60.
 
 ## 10.1 Conceito de Walk-Forward
 
@@ -842,8 +843,8 @@ Com posição vendida, a carteira (comprados − vendidos) já é o excesso: a r
 
 | **Parâmetro**           | **Descrição**                                                                                                                                   |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Score Min / Max (0-100) | Intervalo do ranking de ativos. Ativos com índice fora deste intervalo são excluídos da otimização em cada step. Valor 0-100 = todos os ativos. |
-| Peso Min (%) / Max (%)  | Limites globais de peso aplicados em cada step da otimização.                                                                                   |
+| Score Min / Max (0-100) | Intervalo do ranking de ativos. Ativos com índice fora deste intervalo são excluídos da otimização em cada step. Valor 0-100 = todos os ativos. Padrão: **75 a 100**. |
+| Peso Min (%) / Max (%)  | Limites globais de peso aplicados em cada step da otimização. Padrão: **0% a 100%**. |
 | Pesos na Validação      | Com que pesos a validação de cada step começa. **Otimizados (Peso Inicial)**, o padrão: os calculados pela otimização do step — é o rebalanceamento. **Atuais (Peso Atual)**: os otimizados depois de andarem com os preços até o fim da otimização — a carteira segue sem rebalancear (para carteiras só compradas, dá os mesmos números das versões anteriores). A escolha fica gravada. |
 | Meta de Retorno         | Opcional. Marque 'Exigir meta' e escolha o modo: **% acima da ref.** (relativa) ou **% ao ano** (absoluta). A meta é aplicada **em cada step** do walk-forward — na relativa, contra a referência daquele período; na absoluta, convertida para os pregões daquela janela. O cumprimento por step é reportado na coluna **Meta%** da tabela de resultados. |
 
