@@ -9,6 +9,24 @@ DETECTAR_REFERENCIA = object()
 # Palavras que denunciam uma coluna de referência, quando é preciso adivinhar.
 TERMOS_REFERENCIA = ['taxa', 'livre', 'risco', 'ibov', 'ref', 'cdi', 'selic']
 
+PREGOES_ANO = 252
+
+
+def anualizar(total, dias):
+    """
+    Anualização COMPOSTA na base de 252 pregões: (1 + total)^(252/dias) - 1.
+
+    total : resultado do período tirado direto da curva base zero (subtração
+            entre dois pontos da curva).
+    dias  : nº de PREGÕES do período — contados, nunca por subtração de datas.
+
+    Devolve None quando a conta não existe: período sem pregões, ou
+    1 + total <= 0 (perda acima de 100 pontos, possível numa curva de excesso).
+    """
+    if dias is None or dias <= 0 or total is None or 1 + total <= 0:
+        return None
+    return (1 + total) ** (PREGOES_ANO / dias) - 1
+
 
 class PortfolioOptimizer:
     def __init__(self, returns_data, selected_assets=None,
@@ -91,7 +109,11 @@ class PortfolioOptimizer:
         self.assets = self.returns_data.columns.tolist()
         self.n_assets = len(self.assets)
         self.n_periods = len(self.returns_data)
-        
+        # Pregões do período = nº de VARIAÇÕES: a 1ª linha é o dia-base da
+        # base zero (variação nula) e não conta — como na planilha original
+        # (Dias = CONT.VALORES - 1).
+        self.n_dias = max(self.n_periods - 1, 1)
+
         print(f"Otimizador inicializado com {self.n_assets} ativos selecionados e {self.n_periods} períodos")
         if self.risk_free_rate_total > 0:
             print(f"Taxa livre de risco detectada: {self.risk_free_rate_total:.2%}")
@@ -132,19 +154,58 @@ class PortfolioOptimizer:
 	    total_under_water = np.sum(downside_returns)
 	    abs_under_water = abs(total_under_water)
 
-	    annual_return = (1 + gv_final) ** (252 / self.n_periods) - 1
+	    annual_return = anualizar(gv_final, self.n_dias)
+	    if annual_return is None:          # curva abaixo de -100%: não há taxa
+		    annual_return = float('nan')
 
-	    sharpe_ratio = excess_return / vol if vol > 0 else 0
+	    sharpe_ratio = self._razao_anual(gv_final, risk_free_rate, vol)
 	    return {
 		    'volatility': vol,
 		    'gv_final': gv_final,
 		    'excess_return': excess_return,
 		    'annual_return': annual_return,
 		    'sharpe_ratio': sharpe_ratio,
-		    'sortino_ratio': excess_return / downside_dev if downside_dev > 0 else 0,
+		    'sortino_ratio': self._razao_anual(gv_final, risk_free_rate, downside_dev),
 		    'total_under_water': total_under_water,
 		    'abs_under_water': abs_under_water,
 	    }
+
+    def _razao_anual(self, gv_final, risk_free_rate, vol):
+	    """
+	    (retorno anualizado − referência anualizada) / risco anualizado.
+
+	    Com a volatilidade é o Sharpe; com o downside deviation, o Sortino.
+	    O Sharpe é o mesmo número exibido na aba Resultados, de modo que o
+	    solver maximiza exatamente o que o usuário vê. Os dois retornos são
+	    anualizados de forma composta em 252 pregões contados (anualizar).
+	    Uma curva abaixo de −100% não tem taxa anual: vale −100%, o pior
+	    possível, para o solver se afastar dela.
+	    """
+	    if vol <= 0:
+		    return 0
+	    anual = anualizar(gv_final, self.n_dias)
+	    ref_anual = anualizar(risk_free_rate, self.n_dias)
+	    anual = -1.0 if anual is None else anual
+	    ref_anual = -1.0 if ref_anual is None else ref_anual
+	    return (anual - ref_anual) / vol
+
+    def _sharpe_sobre_1_menos_r2(self, weights, risk_free_rate=0.0):
+	    """
+	    Sharpe / (1 − R²): o Sharpe anualizado (o mesmo da aba Resultados)
+	    dividido por (1 − R²) da curva acumulada da carteira — a "Sharp /
+	    (1 - Rquad)" da planilha original. Premia risco-retorno E linearidade.
+
+	    É suave em todo o domínio (não tem as penalidades em degrau do antigo
+	    Inclinação/[(1−R²)×Vol], que deixavam o solver parado). (1 − R²) tem
+	    um piso minúsculo só para não dividir por zero numa reta perfeita.
+	    """
+	    # Uma passada só sobre os dados (a função roda milhares de vezes).
+	    curva = np.cumsum(np.dot(self.returns_data.values, np.asarray(weights)))
+	    pu = np.concatenate([[0.0], curva])
+	    vol = np.std((1 + pu[1:]) / (1 + pu[:-1]) - 1, ddof=0) * np.sqrt(252)
+	    sharpe = self._razao_anual(curva[-1], risk_free_rate, vol)
+	    _, r2 = self._lin_slope_r2(curva)
+	    return sharpe / max(1.0 - r2, 1e-9)
 
     def _lin_slope_r2(self, y):
 	    """
@@ -219,10 +280,10 @@ class PortfolioOptimizer:
 	    # GV_final: Último valor da coluna GV (retorno acumulado total)
 	    gv_final = portfolio_cumulative[-1]
 	    
-	    # HC8: Sharpe ratio CORRIGIDO com taxa livre de risco
-	    # Fórmula: (Retorno Total - Taxa Livre de Risco) / Volatilidade
+	    # Sharpe ANUALIZADO — o mesmo número exibido na aba Resultados:
+	    # (retorno anualizado − referência anualizada) / volatilidade anualizada.
 	    excess_return = gv_final - risk_free_rate
-	    sharpe_ratio = excess_return / portfolio_vol if portfolio_vol > 0 else 0
+	    sharpe_ratio = self._razao_anual(gv_final, risk_free_rate, portfolio_vol)
 	    
 	    # NOVO: Sortino Ratio
 	    # Downside Deviation = semi-desvio-padrão clássico de Sortino & Price:
@@ -235,8 +296,8 @@ class PortfolioOptimizer:
 	    downside_deviation = np.sqrt(np.mean(downside_returns ** 2)) * np.sqrt(252)
 
 	    # Sortino Ratio
-	    # Usa o excesso de retorno sobre a taxa livre dividido pelo downside deviation
-	    sortino_ratio = excess_return / downside_deviation if downside_deviation > 0 else 0
+	    # Excesso ANUALIZADO sobre a referência dividido pelo downside deviation (como o Sharpe)
+	    sortino_ratio = self._razao_anual(gv_final, risk_free_rate, downside_deviation)
 
 	    # NOVO: Total Under Water — soma de todos os retornos diários negativos (<= 0).
 	    # abs_under_water = total de perdas acumuladas do período (>= 0). É a medida
@@ -248,7 +309,9 @@ class PortfolioOptimizer:
 	    abs_under_water = abs(total_under_water)
 	    
 	    # Retorno anualizado (para comparação)
-	    annual_return = (1 + gv_final) ** (252 / self.n_periods) - 1
+	    annual_return = anualizar(gv_final, self.n_dias)
+	    if annual_return is None:          # curva abaixo de -100%: não há taxa
+		    annual_return = float('nan')
 	    
 	    # VaR (Value at Risk) - Método Paramétrico
 	    # VaR diário - AGORA USANDO RETORNOS PERCENTUAIS
@@ -493,8 +556,8 @@ class PortfolioOptimizer:
         - RELATIVA (target_return): alvo = referência × (1 + meta).
           Depende da taxa de referência; se ela for zero, o alvo é zero.
         - ABSOLUTA (target_annual): meta anual independente de referência.
-          alvo = (1 + meta_anual)^(períodos/252) - 1, usando a MESMA convenção
-          de anualização do próprio otimizador (252 períodos de pregão), de
+          alvo = (1 + meta_anual)^(pregões/252) - 1, usando a MESMA convenção
+          de anualização do próprio otimizador (252 pregões, contados), de
           modo que exigir o alvo equivale exatamente a exigir
           annual_return >= meta_anual. A potência é calculada UMA vez, fora do
           laço do solver.
@@ -502,8 +565,8 @@ class PortfolioOptimizer:
         Retorna (meta_required, meta_mode) ou (None, None) se não há meta.
         """
         if target_annual is not None:
-            n = max(int(self.n_periods), 1)
-            return (1.0 + target_annual) ** (n / 252.0) - 1.0, 'absoluta'
+            n = self.n_dias
+            return (1.0 + target_annual) ** (n / PREGOES_ANO) - 1.0, 'absoluta'
         if target_return is not None:
             return risk_free_rate * (1 + target_return), 'relativa'
         return None, None
@@ -520,6 +583,11 @@ class PortfolioOptimizer:
         """
         
         def objective_function(weights):
+            if objective_type == 'sharpe_r2':
+                # asinh: mesma carteira ótima (é crescente), mas em escala
+                # moderada — sem ela o SLSQP perde precisão (valores ~1000
+                # e muito íngremes quando R² -> 1) e acusa falha à toa.
+                return -np.arcsinh(self._sharpe_sobre_1_menos_r2(weights, risk_free_rate))
             # Caminho ENXUTO para objetivos simples: calcula só o necessário,
             # sem VaR/CVaR/regressões. Acelera muito com muitos ativos.
             if objective_type in ('sharpe', 'sortino', 'under_water', 'volatility', 'return'):
@@ -569,11 +637,9 @@ class PortfolioOptimizer:
                     return 1e10
                     
             elif objective_type == 'quality_linear':
-                # NOVA: Minimizar [Vol × (1-R²)]/R² 
-                # Só funciona se temos taxa livre de risco detectada
-                if not hasattr(self, 'risk_free_cumulative') or self.risk_free_cumulative is None:
-                    return 1e10  # Penalizar se não tem taxa livre
-                
+                # Minimizar [Vol × (1-R²)]/R² da curva da CARTEIRA. Não usa a
+                # referência (antes exigia uma e, sem ela, devolvia uma
+                # constante: o solver não saía do lugar).
                 # Maximizar "qualidade da linearidade" 
                 if metrics['volatility'] > 0 and metrics['r_squared'] > 0.001:  # R² > 0.1%
                     # Fórmula: [Vol × (1-R²)]/R²
@@ -784,6 +850,8 @@ class PortfolioOptimizer:
 
         def objective_function(weights_to_optimize):
             full_weights = _full_weights(weights_to_optimize)
+            if objective_type == 'sharpe_r2':
+                return -np.arcsinh(self._sharpe_sobre_1_menos_r2(full_weights, risk_free_rate))
 
             # Caminho ENXUTO para objetivos simples (ver optimize_portfolio)
             if objective_type in ('sharpe', 'sortino', 'under_water', 'volatility', 'return'):
@@ -820,8 +888,7 @@ class PortfolioOptimizer:
                 else:
                     return 1e10
             elif objective_type == 'quality_linear':
-                if not hasattr(self, 'risk_free_cumulative') or self.risk_free_cumulative is None:
-                    return 1e10
+                # Não depende da referência (ver optimize_portfolio).
                 if metrics['volatility'] > 0 and metrics['r_squared'] > 0.001:
                     quality_metric = (metrics['volatility'] * (1 - metrics['r_squared'])) / metrics['r_squared']
                     return quality_metric

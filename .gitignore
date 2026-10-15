@@ -15,6 +15,8 @@ dist/
 
 # Cache das fontes de dados
 cvm_cache/
+cache_eventos/
+fii_cnpj.csv
 
 # Preferencias do usuario (geradas em tempo de execucao)
 preferencias.json

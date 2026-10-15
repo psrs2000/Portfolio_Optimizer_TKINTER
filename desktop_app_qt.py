@@ -42,7 +42,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit, QDialogButtonBox, QSpinBox
 )
 
-from optimizer import PortfolioOptimizer
+from optimizer import PortfolioOptimizer, anualizar
 
 # yfinance é OPCIONAL: sem ele o aplicativo funciona normalmente, apenas a
 # importação pelo Yahoo Finance fica indisponível (com aviso ao usuário).
@@ -80,6 +80,15 @@ try:
 except Exception as _e:
     cvmsrc, CVM_OK = None, False
     CVM_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+
+# Ajuste OPCIONAL das cotações da B3 por eventos corporativos (desdobramentos,
+# proventos...). Sem o módulo, a importação da B3 segue igual, só sem a opção.
+try:
+    import eventos_corporativos as eventsrc
+    EVENTOS_OK, EVENTOS_IMPORT_ERROR = True, None
+except Exception as _e:
+    eventsrc, EVENTOS_OK = None, False
+    EVENTOS_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
 # Sentinela equivalente ao tk.END, usado pelo adaptador de listbox
 END = "end"
@@ -815,6 +824,12 @@ def pasta_dados_usuario(nome_app="OtimizadorPortfolio"):
 ARQUIVO_PREFERENCIAS = "preferencias.json"
 PREF_LIMPAR_CACHE = "limpar_cache_cvm_ao_sair"
 PREF_PASTA_CACHE = "pasta_cache_cvm"
+PREF_AJUSTAR_EVENTOS = "b3_ajustar_eventos"
+PREF_AJUSTAR_PROVENTOS = "b3_ajustar_proventos"
+PREF_SITE_NAO_OFICIAL = "b3_site_nao_oficial"
+PREF_SITE_ENDERECO = "b3_site_endereco"
+PREF_PASTA_EVENTOS = "b3_pasta_eventos"
+PREF_AUTO_PESOS_VALID = "auto_pesos_validacao"
 
 
 def _caminho_preferencias():
@@ -875,6 +890,62 @@ def pasta_cache_cvm_inicial():
         except OSError:
             continue
     return padrao     # nem o padrão pôde ser criado; o download avisará o erro
+
+
+def pasta_eventos_inicial():
+    """
+    Pasta dos dados do ajuste por eventos (cache_eventos\\ e fii_cnpj.csv) com
+    que a janela da B3 abre: a última escolhida pelo usuário, se ainda existir;
+    senão a pasta de dados do programa — onde esses arquivos sempre ficaram.
+    Nada é criado aqui: com o ajuste desmarcado, a pasta nem é usada.
+    """
+    escolhida = ler_preferencia(PREF_PASTA_EVENTOS, None)
+    if escolhida and os.path.isdir(escolhida):
+        return escolhida
+    return pasta_dados_usuario()
+
+
+def pasta_eventos_em_uso(texto):
+    """
+    A pasta digitada/escolhida, criada se preciso. Se não puder ser criada
+    (pendrive removido, caminho inválido), volta à pasta padrão em vez de
+    deixar o ajuste sem cache e sem a lista de CNPJs.
+    """
+    for caminho in (texto, pasta_dados_usuario()):
+        if not caminho:
+            continue
+        try:
+            os.makedirs(caminho, exist_ok=True)
+            return caminho
+        except (OSError, ValueError):      # ValueError: caractere inválido no caminho
+            continue
+    return pasta_dados_usuario()
+
+
+def _anual(total, pregoes):
+    """Anualização composta em 252 pregões contados (None se não existir)."""
+    return anualizar(total, pregoes)
+
+
+def _sharpe_anual(anual, ref_anual, vol):
+    """(anualizado − referência anualizada) / volatilidade; None se faltar algo."""
+    if anual is None or ref_anual is None or not vol:
+        return None
+    return (anual - ref_anual) / vol
+
+
+def _razao_texto(excesso_anual, ref_anual):
+    if excesso_anual is None or not ref_anual:
+        return "n/d"
+    return f"{excesso_anual / ref_anual * 100:.1f}%"
+
+
+def _pct(valor):
+    return "n/d" if valor is None else f"{valor:.2%}"
+
+
+def _num3(valor):
+    return "n/d" if valor is None else f"{valor:.3f}"
 
 
 def promote_reference_column(df, ativo_referencia):
@@ -1142,7 +1213,12 @@ class _PriceImportDialog(QDialog):
 
     # ---- fluxo comum ----
     def _fetch(self):
-        simbolos = [s.strip().upper() for s in self.symbols_edit.toPlainText().split('\n') if s.strip()]
+        digitados = [s.strip().upper() for s in self.symbols_edit.toPlainText().split('\n') if s.strip()]
+        # Código repetido vira coluna repetida, e a limpeza das séries quebrava
+        # ("The truth value of a Series is ambiguous"). Fica uma vez só, e o
+        # usuário é avisado na mensagem final.
+        simbolos = list(dict.fromkeys(digitados))
+        self.repetidos = sorted({s for s in digitados if digitados.count(s) > 1})
         if len(simbolos) < 2:
             messagebox.showerror("Erro", "Digite pelo menos 2 símbolos.")
             return
@@ -1296,6 +1372,154 @@ class B3ImportDialog(_PriceImportDialog):
                    "cada ano é grande (dezenas de MB) e pode levar de alguns segundos "
                    "a minutos — a janela pode parecer parada durante cada ano.")
         self.progress_label = "Baixando COTAHIST"
+        self.setMinimumSize(600, 920)
+
+    def _extra_widgets(self, layout):
+        # Ajuste por eventos corporativos: OPCIONAL e desligado de fábrica.
+        # Desmarcado, a importação é exatamente a de sempre (preços como
+        # negociados). A escolha fica gravada para as próximas vezes.
+        box = QGroupBox("🧮 Ajuste por eventos corporativos (opcional)")
+        bl = QVBoxLayout(box)
+        self.chk_eventos = QCheckBox(
+            "Ajustar desdobramentos, grupamentos e bonificações")
+        self.chk_proventos = QCheckBox(
+            "Ajustar também os proventos (dividendos, JCP, rendimentos de FII) "
+            "— retorno total")
+        self.chk_proventos.setStyleSheet("margin-left: 18px;")
+        bl.addWidget(self.chk_eventos)
+        bl.addWidget(self.chk_proventos)
+
+        # Site NÃO oficial: só para completar o histórico que as fontes
+        # oficiais não têm (FI-Infra, FIP). Desligado de fábrica.
+        self.chk_site = QCheckBox(
+            "Completar com site não oficial quando a fonte oficial não tiver o histórico")
+        self.chk_site.setStyleSheet("margin-left: 36px;")
+        bl.addWidget(self.chk_site)
+        linha_site = QHBoxLayout()
+        linha_site.addSpacing(54)
+        self.site_entry = QLineEdit()
+        self.site_entry.setToolTip(
+            "Endereço da página de proventos; o código do papel é acrescentado no fim "
+            "(ou entra no lugar de {ticker}). Vários endereços, separados por \";\", são "
+            "tentados em ordem. O site precisa mostrar uma tabela com as colunas "
+            "\"Data com\" (ou \"Data base\") e \"Valor\".")
+        linha_site.addWidget(self.site_entry, 1)
+        b_padrao = QPushButton("Padrão")
+        b_padrao.setToolTip("Volta ao endereço padrão")
+        b_padrao.clicked.connect(lambda: self.site_entry.setText(
+            eventsrc.SITE_PADRAO if EVENTOS_OK else ""))
+        linha_site.addWidget(b_padrao)
+        bl.addLayout(linha_site)
+        self._linha_site = (self.site_entry, b_padrao)
+
+        # Pasta dos dados do ajuste (cache e lista de CNPJs descobertos).
+        # Apontar o .py e o .exe para a mesma pasta faz os dois compartilharem.
+        linha_pasta = QHBoxLayout()
+        rotulo_pasta = QLabel("📁 Pasta dos dados de eventos:")
+        linha_pasta.addWidget(rotulo_pasta)
+        self.eventos_entry = QLineEdit()
+        self.eventos_entry.setToolTip(
+            "Onde ficam o cache dos eventos (pasta cache_eventos) e a lista de CNPJs "
+            "de fundos descobertos pelo programa (fii_cnpj.csv). Apontar o programa .py "
+            "e o executável para a mesma pasta faz os dois usarem os mesmos dados.")
+        linha_pasta.addWidget(self.eventos_entry, 1)
+        b_pasta = QPushButton("Procurar...")
+        b_pasta.clicked.connect(self._escolher_pasta_eventos)
+        linha_pasta.addWidget(b_pasta)
+        bl.addLayout(linha_pasta)
+        self._linha_pasta = (rotulo_pasta, self.eventos_entry, b_pasta)
+
+        self.hint_eventos = QLabel()
+        self.hint_eventos.setStyleSheet("color: gray;")
+        self.hint_eventos.setWordWrap(True)
+        bl.addWidget(self.hint_eventos)
+        layout.addWidget(box)
+
+        if not EVENTOS_OK:
+            self.chk_eventos.setEnabled(False)
+            self.chk_proventos.setEnabled(False)
+            self.chk_site.setEnabled(False)
+            for w in self._linha_site + self._linha_pasta:
+                w.setEnabled(False)
+            self.hint_eventos.setText(
+                "Indisponível: não foi possível carregar o módulo "
+                f"'eventos_corporativos.py' ({EVENTOS_IMPORT_ERROR}).")
+            return
+
+        self.chk_eventos.setChecked(bool(ler_preferencia(PREF_AJUSTAR_EVENTOS, False)))
+        self.chk_proventos.setChecked(bool(ler_preferencia(PREF_AJUSTAR_PROVENTOS, True)))
+        self.chk_site.setChecked(bool(ler_preferencia(PREF_SITE_NAO_OFICIAL, False)))
+        endereco = ler_preferencia(PREF_SITE_ENDERECO, eventsrc.SITE_PADRAO) or eventsrc.SITE_PADRAO
+        if endereco in eventsrc.SITES_PADRAO_ANTERIORES:   # padrão antigo, não escolha do usuário
+            endereco = eventsrc.SITE_PADRAO
+        self.site_entry.setText(endereco)
+        self.eventos_entry.setText(pasta_eventos_inicial())
+        self.eventos_entry.editingFinished.connect(
+            lambda: gravar_preferencia(PREF_PASTA_EVENTOS, self.eventos_entry.text().strip()))
+        self.chk_eventos.toggled.connect(self._mudou_ajuste)
+        self.chk_proventos.toggled.connect(self._mudou_ajuste)
+        self.chk_site.toggled.connect(self._ligou_site)
+        self.chk_site.toggled.connect(self._mudou_ajuste)
+        self.site_entry.editingFinished.connect(
+            lambda: gravar_preferencia(PREF_SITE_ENDERECO, self.site_entry.text().strip()))
+        self._mudou_ajuste()
+
+    def _ligou_site(self, marcado):
+        """Ao ligar o site não oficial, deixa claro o que isso significa."""
+        if marcado:
+            messagebox.showinfo(
+                "Site não oficial",
+                "Os proventos virão de um site de terceiros, e não da B3 ou da CVM.\n\n"
+                "• Só são usados para completar o histórico que as fontes oficiais não "
+                "têm (hoje: FI-Infra e FIP), e só se os últimos 12 meses do site "
+                "baterem com os da B3.\n"
+                "• O programa respeita o robots.txt do site e lê a página do papel (e as "
+                "seguintes, com pausa, se a tabela for paginada), guardando-as no cache. "
+                "O segundo endereço só é consultado se o primeiro não servir.\n"
+                "• Os dados de sites como o Carteira Falcão são para uso PESSOAL. "
+                "Cabe a quem usa respeitar os termos do site escolhido.\n\n"
+                "No relatório, esses proventos aparecem marcados com o nome do site.")
+
+    def _escolher_pasta_eventos(self):
+        pasta = QFileDialog.getExistingDirectory(
+            self, "Pasta dos dados de eventos", self.eventos_entry.text())
+        if pasta:
+            self.eventos_entry.setText(os.path.normpath(pasta))
+            gravar_preferencia(PREF_PASTA_EVENTOS, os.path.normpath(pasta))
+
+    def _mudou_ajuste(self, *_):
+        """Grava a escolha e atualiza a explicação."""
+        ligado = self.chk_eventos.isChecked()
+        self.chk_proventos.setEnabled(ligado)
+        com_site = ligado and self.chk_proventos.isChecked()
+        self.chk_site.setEnabled(com_site)
+        for w in self._linha_site:
+            w.setEnabled(com_site and self.chk_site.isChecked())
+        for w in self._linha_pasta:
+            w.setEnabled(ligado)
+        gravar_preferencia(PREF_AJUSTAR_EVENTOS, ligado)
+        gravar_preferencia(PREF_AJUSTAR_PROVENTOS, self.chk_proventos.isChecked())
+        gravar_preferencia(PREF_SITE_NAO_OFICIAL, self.chk_site.isChecked())
+        if not ligado:
+            self.hint_eventos.setText(
+                "Desmarcado: os preços vêm como foram negociados. Um desdobramento "
+                "aparece como queda (ex.: −75% num 1 para 4) e os dividendos não "
+                "entram no retorno.")
+        elif self.chk_proventos.isChecked():
+            self.hint_eventos.setText(
+                "Os preços anteriores a cada evento são recalculados, como se o "
+                "provento tivesse sido reinvestido no próprio papel; o último preço "
+                "da série continua sendo o real. Os eventos vêm da B3 (e do "
+                "Fundos.NET para FIIs) — alguns segundos por papel na primeira vez; "
+                "depois ficam guardados. Ao final, um relatório mostra tudo o que "
+                "foi ajustado."
+                + (" O site não oficial só entra onde a fonte oficial não tem o "
+                   "histórico, e só depois de conferido com a B3."
+                   if self.chk_site.isChecked() else ""))
+        else:
+            self.hint_eventos.setText(
+                "Só os eventos em ações são corrigidos; os proventos ficam fora "
+                "(retorno de preço). Ao final, um relatório mostra o que foi ajustado.")
 
     def _run_fetch(self, simbolos, d_ini, d_fim, tipo_preco, k, progress):
         df = b3src.baixar_periodo(d_ini, d_fim, set(simbolos),
@@ -1304,6 +1528,28 @@ class B3ImportDialog(_PriceImportDialog):
             df, simbolos, tipo_preco, d_ini, d_fim, somente_vista=b3src.SOMENTE_VISTA)
         # Limpeza canônica (idêntica para todas as fontes) — ver limpar_series_precos
         wide, relatorio = limpar_series_precos(wide, k=k)
+
+        # Ajuste opcional, DEPOIS da limpeza: só se consultam os papéis que
+        # ficaram. Desmarcado, nada aqui é executado.
+        if EVENTOS_OK and self.chk_eventos.isChecked() and len(wide.columns) > 1:
+            self.progress_label = "Eventos corporativos"
+            try:
+                pasta = pasta_eventos_em_uso(self.eventos_entry.text().strip())
+                wide, rel = eventsrc.ajustar_eventos(
+                    wide, df, proventos=self.chk_proventos.isChecked(),
+                    pasta_cache=os.path.join(pasta, "cache_eventos"),
+                    tabela_fii_extra=os.path.join(pasta, "fii_cnpj.csv"),
+                    progress=progress,
+                    site_nao_oficial=(self.site_entry.text().strip() or None)
+                    if self.chk_proventos.isChecked() and self.chk_site.isChecked() else None)
+                relatorio["ajuste"] = rel
+                self.origem_desc = f"{self.origem_desc} — ajustada por eventos"
+            except Exception as e:
+                # Erro inesperado no ajuste: os dados seguem como negociados,
+                # e o usuário é avisado com destaque (nunca em silêncio).
+                relatorio["ajuste_erro"] = f"{type(e).__name__}: {e}"
+            finally:
+                self.progress_label = "Baixando COTAHIST"
         return wide, faltantes, relatorio
 
 
@@ -1558,6 +1804,7 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.tab_auto = QWidget()
         self.notebook.addTab(self.tab_auto, "🤖 Auto-Otimização")
         self.setup_auto_optimization_tab()
+        self._atualizar_objetivos_auto()
 
     # ---- Helpers de layout ----
 
@@ -2048,7 +2295,7 @@ class PortfolioOptimizerGUI(QMainWindow):
             "Maximizar Sortino Ratio",
             "Minimizar Risco",
             "Minimizar Under Water",
-            "Maximizar Inclinação/[(1-R²)×Vol]",
+            "Maximizar Sharpe/(1-R²)",
             "Maximizar Qualidade da Linearidade"
         ]
         self.risk_free_objectives = [
@@ -2310,8 +2557,8 @@ class PortfolioOptimizerGUI(QMainWindow):
         self.ranking_config_frame = QGroupBox("⚙️ Configurar Pesos dos Parâmetros")
         cfg_l = QVBoxLayout(self.ranking_config_frame)
         self.peso_inc_var = self._add_slider(cfg_l, "📈 Peso Inclinação:", 0, 1, 0.33, 2, suffix="")
-        self.peso_desv_var = self._add_slider(cfg_l, "📊 Peso Estabilidade:", 0, 1, 0.33, 2, suffix="")
-        self.peso_cor_var = self._add_slider(cfg_l, "🎯 Peso Correlação:", 0, 1, 0.33, 2, suffix="")
+        self.peso_desv_var = self._add_slider(cfg_l, "📊 Peso Estabilidade:", 0, 1, 1.00, 2, suffix="")
+        self.peso_cor_var = self._add_slider(cfg_l, "🎯 Peso Correlação:", 0, 1, 0.60, 2, suffix="")
 
         btn_calc = QPushButton("🔄 Calcular Ranking")
         btn_calc.clicked.connect(self.calculate_ranking)
@@ -2715,7 +2962,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                     assets_used_in_optimization = selected_assets
 
                 optimizer_to_use = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
-                                                      risk_free_column=self._coluna_referencia())
+                                                      risk_free_column=self._referencia_da_carteira())
             else:
                 optimizer_to_use = self.optimizer
 
@@ -3241,13 +3488,68 @@ class PortfolioOptimizerGUI(QMainWindow):
                 if rel.get('regra2'):
                     msg += (f"\n🧹 Excluídos (>{rel.get('k')} dias seguidos sem dado): "
                             f"{', '.join(rel['regra2'])}")
+                if rel.get('ajuste'):
+                    msg += "\n\n" + eventsrc.resumo_curto(rel['ajuste'])
 
             if dlg.erros:
                 msg += f"\n\n⚠️ Sem dados para: {', '.join(dlg.erros)}"
+            if getattr(dlg, 'repetidos', None):
+                msg += (f"\n\nℹ️ Repetidos na lista (considerados uma vez só): "
+                        f"{', '.join(dlg.repetidos)}")
             msg += "\n\n🎯 Agora configure as janelas temporais."
             messagebox.showinfo("Sucesso", msg)
+
+            # Ajuste por eventos (B3, opcional): o relatório completo, para
+            # conferir; ou o aviso, com destaque, de que o ajuste não foi feito.
+            if rel and rel.get('ajuste_erro'):
+                messagebox.showwarning(
+                    "Ajuste por eventos NÃO foi feito",
+                    "Ocorreu um erro durante o ajuste por eventos corporativos:\n\n"
+                    f"{rel['ajuste_erro']}\n\n"
+                    "Os dados foram importados SEM ajuste (preços como negociados).")
+            elif rel and rel.get('ajuste'):
+                self._mostrar_relatorio_ajuste(eventsrc.texto_relatorio(rel['ajuste']))
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao aplicar os dados importados:\n{str(e)}")
+
+    def _mostrar_relatorio_ajuste(self, texto):
+        """Janela com tudo o que o ajuste por eventos fez, papel por papel."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🧮 Ajuste por eventos corporativos — relatório")
+        dlg.resize(900, 600)
+        lay = QVBoxLayout(dlg)
+        caixa = QPlainTextEdit()
+        caixa.setReadOnly(True)
+        caixa.setLineWrapMode(QPlainTextEdit.NoWrap)
+        fonte = QFont("Consolas", 9)
+        fonte.setStyleHint(QFont.Monospace)     # colunas alinhadas em qualquer sistema
+        caixa.setFont(fonte)
+        caixa.setPlainText(texto)
+        lay.addWidget(caixa)
+        linha = QHBoxLayout()
+        b_copiar = QPushButton("📋 Copiar")
+        b_copiar.clicked.connect(lambda: QApplication.clipboard().setText(texto))
+        linha.addWidget(b_copiar)
+        b_salvar = QPushButton("💾 Salvar como .txt...")
+
+        def _salvar():
+            caminho, _ = QFileDialog.getSaveFileName(
+                dlg, "Salvar relatório", "ajuste_eventos.txt", "Texto (*.txt)")
+            if caminho:
+                try:
+                    with open(caminho, "w", encoding="utf-8") as f:
+                        f.write(texto)
+                except OSError as e:
+                    messagebox.showerror("Erro", f"Não foi possível salvar:\n{e}")
+
+        b_salvar.clicked.connect(_salvar)
+        linha.addWidget(b_salvar)
+        linha.addStretch()
+        b_ok = QPushButton("Fechar")
+        b_ok.clicked.connect(dlg.accept)
+        linha.addWidget(b_ok)
+        lay.addLayout(linha)
+        dlg.exec_()
 
     def _atualizar_rotulo_ref_auto(self):
         """
@@ -3284,6 +3586,22 @@ class PortfolioOptimizerGUI(QMainWindow):
         """
         return self.risk_free_column_name if self.has_risk_free else None
 
+    def _vendido_ativo(self):
+        """Há posição vendida configurada e habilitada na aba Short/Hedge?"""
+        return bool(getattr(self, 'use_short', None) and self.use_short.get()
+                    and getattr(self, 'short_weights', None))
+
+    def _referencia_da_carteira(self):
+        """
+        Referência usada na otimização manual e na aba Resultados.
+
+        Com posição vendida, a curva da carteira (comprados − vendidos) JÁ é o
+        excesso: descontar a referência de novo seria contar o índice duas
+        vezes. Nesse caso a carteira é tratada como sem referência (Sharpe e
+        Sortino sem desconto; Taxa Ref e Excesso aparecem zerados).
+        """
+        return None if self._vendido_ativo() else self._coluna_referencia()
+
     def update_objective_options(self):
         """Atualizar opções de objetivo baseado na taxa livre"""
         _clear_layout(self.risk_free_obj_layout)
@@ -3297,10 +3615,18 @@ class PortfolioOptimizerGUI(QMainWindow):
         for obj in self.risk_free_objectives:
             self.objective_buttons.pop(obj, None)
             self.objective_var.buttons.pop(obj, None)
-        if escolhido in self.risk_free_objectives and not self.has_risk_free:
+        com_referencia = self.has_risk_free and not self._vendido_ativo()
+        if escolhido in self.risk_free_objectives and not com_referencia:
             self.objective_buttons["Maximizar Sharpe Ratio"].setChecked(True)
 
-        if self.has_risk_free:
+        if self.has_risk_free and not com_referencia:
+            aviso = QLabel("Objetivos com Taxa de Referência: indisponíveis com posição "
+                           "vendida — a carteira (comprados − vendidos) já é o excesso.")
+            aviso.setStyleSheet("color: gray;")
+            aviso.setWordWrap(True)
+            self.risk_free_obj_layout.addWidget(aviso)
+
+        if com_referencia:
             sep = QFrame()
             sep.setFrameShape(QFrame.HLine)
             self.risk_free_obj_layout.addWidget(sep)
@@ -3320,6 +3646,9 @@ class PortfolioOptimizerGUI(QMainWindow):
             # objetivo de excesso que ele já havia escolhido.
             if escolhido in self.risk_free_objectives:
                 self.objective_buttons[escolhido].setChecked(True)
+
+        # A Auto-Otimização segue a mesma regra (referência e vendido dela).
+        self._atualizar_objetivos_auto()
 
     def update_advanced_widgets(self):
         self.update_constraints_widgets()
@@ -3739,6 +4068,8 @@ class PortfolioOptimizerGUI(QMainWindow):
         popup.exec_()
 
     def update_short_summary(self):
+        if hasattr(self, 'risk_free_obj_layout'):
+            self.update_objective_options()
         _clear_layout(self.short_summary_layout)
 
         if not self.short_weights:
@@ -3760,6 +4091,8 @@ class PortfolioOptimizerGUI(QMainWindow):
 
     def toggle_short_selling(self):
         self.update_short_widgets()
+        if hasattr(self, 'risk_free_obj_layout'):
+            self.update_objective_options()
 
     def get_individual_constraints(self):
         if not self.use_individual_constraints.get():
@@ -3944,7 +4277,7 @@ class PortfolioOptimizerGUI(QMainWindow):
             QApplication.processEvents()
 
             self.optimizer = PortfolioOptimizer(self.df, all_assets,
-                                                risk_free_column=self._coluna_referencia())
+                                                risk_free_column=self._referencia_da_carteira())
 
             status_label.setText("Configurando parâmetros...")
             QApplication.processEvents()
@@ -3954,7 +4287,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                 "Maximizar Sortino Ratio": 'sortino',
                 "Minimizar Risco": 'volatility',
                 "Minimizar Under Water": 'under_water',
-                "Maximizar Inclinação/[(1-R²)×Vol]": 'hc10',
+                "Maximizar Sharpe/(1-R²)": 'sharpe_r2',
                 "Maximizar Qualidade da Linearidade": 'quality_linear',
                 "Maximizar Linearidade do Excesso": 'excess_hc10',
                 "Maximizar Sharpe do Excesso": 'excess_sharpe'
@@ -4087,25 +4420,23 @@ class PortfolioOptimizerGUI(QMainWindow):
 
         metrics = self.result['metrics']
 
-        if hasattr(self, 'periodo_otimizacao') and self.periodo_otimizacao:
-            data_inicio_otim = self.periodo_otimizacao['inicio']
-            data_fim_otim = self.periodo_otimizacao['fim']
-            n_dias_otim = (data_fim_otim - data_inicio_otim).days
-        else:
-            n_dias_otim = len(self.optimizer.returns_data)
-
-        risk_free_annual = (1 + metrics['risk_free_rate']) ** (365 / n_dias_otim) - 1
-        sharpe_corrected = (metrics['annual_return'] - risk_free_annual) / metrics['volatility']
-
-        excess_annual_in = metrics['annual_return'] - risk_free_annual
-        ratio_in = f"{excess_annual_in / risk_free_annual * 100:.1f}%" if risk_free_annual != 0 else "n/d"
+        # Família das CURVAS: resultados tirados das somatórias base zero
+        # (carteira, referência e excesso = carteira − referência) e
+        # anualizados de forma composta em 252 pregões CONTADOS. O excesso é
+        # anualizado a partir da própria curva do excesso.
+        n_dias_otim = self.optimizer.n_dias
+        annual_in = _anual(metrics['gv_final'], n_dias_otim)
+        risk_free_annual = _anual(metrics['risk_free_rate'], n_dias_otim)
+        excess_annual_in = _anual(metrics['excess_return'], n_dias_otim)
+        sharpe_corrected = _sharpe_anual(annual_in, risk_free_annual, metrics['volatility'])
+        ratio_in = _razao_texto(excess_annual_in, risk_free_annual)
 
         in_sample_text = f"""🎯 RETORNOS:
   • Total: {metrics['gv_final']:.2%}
-  • Anualizado: {metrics['annual_return']:.2%}
+  • Anualizado: {_pct(annual_in)}
 
 ⚡ PERFORMANCE:
-  • Sharpe: {sharpe_corrected:.3f}
+  • Sharpe: {_num3(sharpe_corrected)}
 
 📊 RISCO:
   • Volatilidade: {metrics['volatility']:.2%}
@@ -4117,13 +4448,13 @@ class PortfolioOptimizerGUI(QMainWindow):
 
 🛡️ REFERÊNCIA:
   • Taxa Ref Período: {metrics['risk_free_rate']:.2%}
-  • Taxa Ref Anualizada: {risk_free_annual*100:.2f}
+  • Taxa Ref Anualizada: {_pct(risk_free_annual)}
   • Excesso Período: {metrics['excess_return']:.2%}
-  • Excesso Anualizado: {excess_annual_in:.2%}
+  • Excesso Anualizado: {_pct(excess_annual_in)}
   • Excesso/Ref: {ratio_in}
 
 📅 PERÍODO:
-  • Dias: {n_dias_otim}"""
+  • Pregões: {n_dias_otim}"""
 
         in_l.addWidget(self._metrics_label(in_sample_text))
         main_horizontal.addWidget(in_sample_box, 1)
@@ -4146,7 +4477,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                     assets_used_in_optimization = selected_assets
 
                 optimizer_valid = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
-                                                     risk_free_column=self._coluna_referencia())
+                                                     risk_free_column=self._referencia_da_carteira())
 
                 n_assets_optimization = len(self.result['weights'])
                 n_assets_validation = optimizer_valid.returns_data.shape[1] if len(optimizer_valid.returns_data.shape) > 1 else 1
@@ -4158,23 +4489,16 @@ class PortfolioOptimizerGUI(QMainWindow):
                     n_dias_otim = len(self.optimizer.returns_data)
 
                     if len(portfolio_returns_valid) > n_dias_otim:
-                        returns_valid_only = portfolio_returns_valid[n_dias_otim:]
+                        # Pregões da validação, CONTADOS: as linhas depois do
+                        # último dia da otimização (que é o dia-base dela).
+                        n_dias_valid = len(portfolio_returns_valid) - n_dias_otim
 
-                        if hasattr(self, 'periodo_otimizacao') and hasattr(self, 'periodo_analise'):
-                            data_fim_otim = self.periodo_otimizacao['fim']
-                            data_fim_analise = self.periodo_analise['fim']
-                            n_dias_valid = (data_fim_analise - data_fim_otim).days
-                        else:
-                            n_dias_valid = len(returns_valid_only)
-
-                        portfolio_total_ate_validacao = cumulative_valid[-1]
-                        portfolio_total_ate_otimizacao = cumulative_valid[n_dias_otim - 1]
-                        retorno_total_valid = (1 + portfolio_total_ate_validacao) / (1 + portfolio_total_ate_otimizacao) - 1
-
-                        if n_dias_valid > 0:
-                            annual_return_valid = (1 + retorno_total_valid) ** (365 / n_dias_valid) - 1
-                        else:
-                            annual_return_valid = 0
+                        # Família das CURVAS: o resultado da validação é a
+                        # SUBTRAÇÃO entre dois pontos da curva base zero —
+                        # fim da validação − fim da otimização —, o mesmo que
+                        # se lê no gráfico. Nada de divisão.
+                        retorno_total_valid = cumulative_valid[-1] - cumulative_valid[n_dias_otim - 1]
+                        annual_return_valid = _anual(retorno_total_valid, n_dias_valid)
 
                         portfolio_cumulative_validacao = cumulative_valid[n_dias_otim - 1:]
 
@@ -4187,51 +4511,45 @@ class PortfolioOptimizerGUI(QMainWindow):
                         else:
                             vol_valid = 0
 
-                        if hasattr(optimizer_valid, 'risk_free_cumulative') and optimizer_valid.risk_free_cumulative is not None:
-                            try:
-                                risk_free_total_ate_validacao = optimizer_valid.risk_free_cumulative.iloc[-1]
-                                risk_free_total_ate_otimizacao = optimizer_valid.risk_free_cumulative.iloc[n_dias_otim - 1]
-                                risk_free_total_valid = (1 + risk_free_total_ate_validacao) / (1 + risk_free_total_ate_otimizacao) - 1
+                        # Referência e excesso, também por SUBTRAÇÃO nas curvas.
+                        # O excesso da validação é o trecho da curva verde
+                        # (carteira − referência) e é anualizado a partir dela.
+                        risk_free_total_valid = 0.0
+                        if getattr(optimizer_valid, 'risk_free_cumulative', None) is not None:
+                            ref_curva = optimizer_valid.risk_free_cumulative.values
+                            risk_free_total_valid = ref_curva[-1] - ref_curva[n_dias_otim - 1]
+                        risk_free_annual_valid = _anual(risk_free_total_valid, n_dias_valid)
+                        excess_total_valid = retorno_total_valid - risk_free_total_valid
+                        excess_return_valid = _anual(excess_total_valid, n_dias_valid)
 
-                                if n_dias_valid > 0:
-                                    risk_free_annual_valid = (1 + risk_free_total_valid) ** (365 / n_dias_valid) - 1
-                                else:
-                                    risk_free_annual_valid = 0
-                            except Exception:
-                                risk_free_annual_valid = 0
-                        else:
-                            risk_free_annual_valid = 0
-
-                        if vol_valid > 0:
-                            sharpe_valid = (annual_return_valid - risk_free_annual_valid) / vol_valid
-                        else:
-                            sharpe_valid = 0
+                        sharpe_valid = _sharpe_anual(annual_return_valid, risk_free_annual_valid, vol_valid)
 
                         mean_daily_return = np.mean(portfolio_returns_pct_valid)
                         std_daily_return = np.std(portfolio_returns_pct_valid, ddof=0)
                         var_95_daily_valid = mean_daily_return - 1.65 * std_daily_return
 
-                        excess_return_valid = annual_return_valid - risk_free_annual_valid
-                        ratio_valid = f"{excess_return_valid / risk_free_annual_valid * 100:.1f}%" if risk_free_annual_valid != 0 else "n/d"
+                        ratio_valid = _razao_texto(excess_return_valid, risk_free_annual_valid)
 
                         out_sample_text = f"""🎯 RETORNOS:
   • Total: {retorno_total_valid:.2%}
-  • Anualizado: {annual_return_valid:.2%}
+  • Anualizado: {_pct(annual_return_valid)}
 
 ⚡ PERFORMANCE:
-  • Sharpe: {sharpe_valid:.3f}
+  • Sharpe: {_num3(sharpe_valid)}
 
 📊 RISCO:
   • Volatilidade: {vol_valid:.2%}
   • VaR 95%: {var_95_daily_valid:.2%}
 
 🛡️ REFERÊNCIA:
-  • Taxa Ref Anualizada: {risk_free_annual_valid:.2%}
-  • Excesso Anualizado: {excess_return_valid:.2%}
+  • Taxa Ref Período: {risk_free_total_valid:.2%}
+  • Taxa Ref Anualizada: {_pct(risk_free_annual_valid)}
+  • Excesso Período: {excess_total_valid:.2%}
+  • Excesso Anualizado: {_pct(excess_return_valid)}
   • Excesso/Ref: {ratio_valid}
 
 📅 PERÍODO:
-  • Dias: {n_dias_valid}"""
+  • Pregões: {n_dias_valid}"""
                     else:
                         out_sample_text = "⚠️ Período de validação muito curto\nconfigurado."
                         annual_return_valid = sharpe_valid = vol_valid = 0
@@ -4256,9 +4574,12 @@ class PortfolioOptimizerGUI(QMainWindow):
         comparison_box = QGroupBox("⚖️ COMPARAÇÃO")
         comp_l = QVBoxLayout(comparison_box)
 
-        if annual_return_valid != 0:
-            diff_return = annual_return_valid - metrics['annual_return']
-            diff_sharpe = sharpe_valid - metrics['sharpe_ratio']
+        # Compara os MESMOS números exibidos nos quadros IN e OUT (antes a
+        # diferença de Sharpe usava um Sharpe do IN-SAMPLE diferente do exibido).
+        if (annual_return_valid not in (None, 0) and annual_in is not None
+                and sharpe_valid is not None and sharpe_corrected is not None):
+            diff_return = annual_return_valid - annual_in
+            diff_sharpe = sharpe_valid - sharpe_corrected
             diff_vol = vol_valid - metrics['volatility']
 
             better_return = "📈 Out" if diff_return > 0 else "📉 In"
@@ -4447,7 +4768,7 @@ Isso ajuda a detectar:
                     assets_used_in_optimization = selected_assets
 
                 optimizer_extended = PortfolioOptimizer(self.df_analise, assets_used_in_optimization,
-                                                        risk_free_column=self._coluna_referencia())
+                                                        risk_free_column=self._referencia_da_carteira())
 
                 if self.has_risk_free and hasattr(self.optimizer, 'risk_free_rate_total'):
                     final_risk_free_rate = self.optimizer.risk_free_rate_total
@@ -4671,18 +4992,22 @@ Isso ajuda a detectar:
         obj_labels = {'sharpe': 'Maximizar Sharpe', 'sortino': 'Maximizar Sortino',
                       'volatility': 'Minimizar Risco',
                       'under_water': 'Minimizar Under Water',
-                      'hc10': 'Maximizar Inc/[(1-R²)×Vol]',
+                      'sharpe_r2': 'Maximizar Sharpe/(1-R²)',
                       'quality_linear': 'Qualidade da Linearidade',
                       'excess_hc10': 'Linearidade do Excesso',
                       'excess_sharpe': 'Sharpe do Excesso'}
         for key, default in [('sharpe', True), ('sortino', False),
                              ('volatility', False), ('under_water', False),
-                             ('hc10', False), ('quality_linear', False),
+                             ('sharpe_r2', False), ('quality_linear', False),
                              ('excess_hc10', False), ('excess_sharpe', False)]:
             cb = QCheckBox(obj_labels[key])
             cb.setChecked(default)
             obj_l.addWidget(cb)
             self.objectives[key] = BoolVar(cb)
+        self.auto_obj_aviso = QLabel()
+        self.auto_obj_aviso.setStyleSheet("color: gray;")
+        self.auto_obj_aviso.setWordWrap(True)
+        obj_l.addWidget(self.auto_obj_aviso)
         obj_l.addStretch()
         params_grid.addWidget(obj_box, 1, 0)
 
@@ -4722,7 +5047,7 @@ Isso ajuda a detectar:
         rank_l.addWidget(QLabel("Score Min:"))
         e_rank_min = QLineEdit()
         e_rank_min.setFixedWidth(50)
-        self.rank_min_var = NumVar(e_rank_min, 0)
+        self.rank_min_var = NumVar(e_rank_min, 75)
         rank_l.addWidget(e_rank_min)
         rank_l.addWidget(QLabel("Max:"))
         e_rank_max = QLineEdit()
@@ -4747,7 +5072,7 @@ Isso ajuda a detectar:
         weight_l.addWidget(QLabel("% Max:"))
         e_wmax = QLineEdit()
         e_wmax.setFixedWidth(50)
-        self.weight_max_var = NumVar(e_wmax, 30)
+        self.weight_max_var = NumVar(e_wmax, 100)
         weight_l.addWidget(e_wmax)
         weight_l.addWidget(QLabel("%"))
         weight_l.addStretch()
@@ -4792,6 +5117,37 @@ Isso ajuda a detectar:
         meta_l3.addStretch()
         cfg_meta.addLayout(meta_l3)
         config_l.addLayout(cfg_meta, 1)
+
+        # Pesos com que a VALIDAÇÃO de cada step começa (base zero recomeçando
+        # no 1º dia da validação): os calculados pela otimização do step
+        # (rebalanceamento) ou os mesmos depois de andarem com os preços até o
+        # fim da otimização (a carteira segue sem rebalancear).
+        cfg_pesos = QVBoxLayout()
+        lbl_p = QLabel("🔁 Pesos na Validação:")
+        lbl_p.setFont(bold())
+        cfg_pesos.addWidget(lbl_p)
+        self.auto_pesos_group = QButtonGroup(self)
+        self.auto_pesos_var = RadioVar(default="otimizados")
+        for chave, texto, dica in (
+                ("otimizados", "Otimizados (Peso Inicial)",
+                 "Cada validação começa com os pesos calculados pela otimização "
+                 "do step: é o rebalanceamento."),
+                ("atuais", "Atuais (Peso Atual)",
+                 "Cada validação começa com os pesos otimizados depois de "
+                 "andarem com os preços até o fim da otimização: a carteira "
+                 "segue sem rebalancear.")):
+            rb = QRadioButton(texto)
+            rb.setToolTip(dica)
+            self.auto_pesos_group.addButton(rb)
+            self.auto_pesos_var.add(chave, rb)
+            cfg_pesos.addWidget(rb)
+        preferido = ler_preferencia(PREF_AUTO_PESOS_VALID, "otimizados")
+        self.auto_pesos_var.set(preferido if preferido in ("otimizados", "atuais") else "otimizados")
+        for rb in self.auto_pesos_group.buttons():
+            rb.toggled.connect(lambda *_: gravar_preferencia(
+                PREF_AUTO_PESOS_VALID, self.auto_pesos_var.get()))
+        cfg_pesos.addStretch()
+        config_l.addLayout(cfg_pesos, 1)
 
         params_grid.addWidget(config_box, 2, 0, 1, 2)
 
@@ -4867,16 +5223,44 @@ Isso ajuda a detectar:
 
     def toggle_auto_shorts(self):
         self.auto_shorts_config.setEnabled(self.use_auto_shorts.get())
+        self._atualizar_objetivos_auto()
+
+    def _auto_vendido_ativo(self):
+        return bool(self.use_auto_shorts.get() and self.auto_short_weights)
+
+    def _atualizar_objetivos_auto(self):
+        """
+        Objetivos com referência (Linearidade e Sharpe do Excesso) só ficam
+        disponíveis na Auto-Otimização quando há referência e não há posição
+        vendida — com vendido, a carteira já é o excesso.
+        """
+        if not hasattr(self, 'auto_obj_aviso'):
+            return
+        if not self.has_risk_free:
+            motivo = "sem taxa de referência"
+        elif self._auto_vendido_ativo():
+            motivo = "com posição vendida — a carteira (comprados − vendidos) já é o excesso"
+        else:
+            motivo = None
+        for chave in ('excess_hc10', 'excess_sharpe'):
+            cb = self.objectives[chave].w
+            cb.setEnabled(motivo is None)
+            if motivo is not None:
+                cb.setChecked(False)
+        self.auto_obj_aviso.setText(
+            f"Objetivos do excesso indisponíveis {motivo}." if motivo else "")
 
     def update_auto_short_summary(self):
         if not self.auto_short_weights:
             self.auto_short_summary.setText("Nenhum ativo short configurado")
             self.auto_short_summary.setStyleSheet("color: gray;")
+            self._atualizar_objetivos_auto()
             return
         linhas = [f"📉 {a}: {w*100:.1f}%" for a, w in self.auto_short_weights.items()]
         total = sum(self.auto_short_weights.values()) * 100
         self.auto_short_summary.setText("\n".join(linhas) + f"\nTotal Short: {total:.1f}%")
         self.auto_short_summary.setStyleSheet("")
+        self._atualizar_objetivos_auto()
 
     def open_auto_short_selection_window(self):
         """Selecionar vários ativos short (fixos) para a Auto-Otimização."""
@@ -5146,10 +5530,13 @@ Isso ajuda a detectar:
         selected_otim = [period for period, var in self.otim_windows.items() if var.get()]
         selected_rebal = [period for period, var in self.rebalance_periods.items() if var.get()]
         selected_obj = [obj for obj, var in self.objectives.items() if var.get()]
+        # Defesa: objetivos do excesso só com referência e sem vendido
+        if not self.has_risk_free or self._auto_vendido_ativo():
+            selected_obj = [o for o in selected_obj if o not in ('excess_hc10', 'excess_sharpe')]
 
         obj_mapping = {'sharpe': 'sharpe', 'sortino': 'sortino',
                        'volatility': 'volatility', 'under_water': 'under_water',
-                       'hc10': 'hc10', 'quality_linear': 'quality_linear',
+                       'sharpe_r2': 'sharpe_r2', 'quality_linear': 'quality_linear',
                        'excess_hc10': 'excess_hc10', 'excess_sharpe': 'excess_sharpe'}
 
         for otim_period in selected_otim:
@@ -5178,6 +5565,7 @@ Isso ajuda a detectar:
                         'target_annual': ((self.auto_meta_abs_var.get() / 100)
                                           if self.use_auto_meta.get()
                                           and self.auto_meta_mode_var.get() == 'absoluta' else None),
+                        'pesos_validacao': self.auto_pesos_var.get(),
                         'desc': f"{otim_period}_{rebal_period}_{obj_key}"
                     }
                     configs.append(config)
@@ -5238,6 +5626,7 @@ Isso ajuda a detectar:
 
             ret_acumulado_config = 1.0
             taxa_ref_acumulada_config = 1.0
+            pregoes_validacao = 0              # soma dos pregões de validação dos steps
             primeira_data_validacao = None
             ultima_data_validacao = None
             step_metrics_individuais = []
@@ -5301,8 +5690,12 @@ Isso ajuda a detectar:
                     )
 
                     if step_result:
-                        retorno_step = step_result['total_return']
+                        # Cada validação parte do zero com o capital do início
+                        # dela, então os steps se encadeiam multiplicando. Uma
+                        # perda acima de 100% (possível com vendido) zera o capital.
+                        retorno_step = max(step_result['total_return'], -1.0)
                         ret_acumulado_config *= (1 + retorno_step)
+                        pregoes_validacao += step_result.get('n_days', 0)
 
                         if 'risk_free_period' in step_result:
                             taxa_ref_step = step_result['risk_free_period']
@@ -5337,19 +5730,15 @@ Isso ajuda a detectar:
                 retorno_total_config = ret_acumulado_config - 1
                 taxa_ref_total_config = taxa_ref_acumulada_config - 1
 
-                if primeira_data_validacao and ultima_data_validacao:
-                    dias_totais = (ultima_data_validacao - primeira_data_validacao).days + 1
-
-                    if dias_totais > 0:
-                        retorno_anualizado = (1 + retorno_total_config) ** (365 / dias_totais) - 1
-                        taxa_ref_anualizada = (1 + taxa_ref_total_config) ** (365 / dias_totais) - 1
-                    else:
-                        retorno_anualizado = 0
-                        taxa_ref_anualizada = 0
-                else:
-                    retorno_anualizado = retorno_total_config
-                    taxa_ref_anualizada = taxa_ref_total_config
-                    dias_totais = 0
+                # Anualização composta em 252 pregões CONTADOS (a soma dos
+                # pregões de validação dos steps), nunca por subtração de datas.
+                dias_totais = pregoes_validacao
+                retorno_anualizado = anualizar(retorno_total_config, dias_totais)
+                taxa_ref_anualizada = anualizar(taxa_ref_total_config, dias_totais)
+                if retorno_anualizado is None:      # capital zerado: o pior possível
+                    retorno_anualizado = -1.0
+                if taxa_ref_anualizada is None:
+                    taxa_ref_anualizada = 0.0
 
                 vol_media = sum(volatilidades) / len(volatilidades) if volatilidades else 0
 
@@ -5429,8 +5818,11 @@ Isso ajuda a detectar:
                 else:
                     all_assets = selected_assets
 
+                # Com vendido, a carteira (comprados − vendidos) já é o excesso:
+                # nada de descontar a referência outra vez (como na otimização manual).
+                ref_step = None if use_shorts_step else self._coluna_referencia()
                 self.optimizer = PortfolioOptimizer(self.df, all_assets,
-                                                    risk_free_column=self._coluna_referencia())
+                                                    risk_free_column=ref_step)
 
                 if hasattr(self.optimizer, 'risk_free_rate_total'):
                     risk_free_rate = self.optimizer.risk_free_rate_total
@@ -5441,7 +5833,7 @@ Isso ajuda a detectar:
                 objective_map = {
                     'sharpe': 'sharpe', 'sortino': 'sortino',
                     'volatility': 'volatility', 'under_water': 'under_water',
-                    'hc10': 'hc10', 'quality_linear': 'quality_linear',
+                    'sharpe_r2': 'sharpe_r2', 'quality_linear': 'quality_linear',
                     'excess_hc10': 'excess_hc10', 'excess_sharpe': 'excess_sharpe'
                 }
 
@@ -5502,138 +5894,91 @@ Isso ajuda a detectar:
                         print(f"   {asset}: {weight:.3f} ({weight*100:.1f}%) - {tipo}")
 
                 print(f"✅ Otimização concluída")
-                print("\n🔍 Calculando OUT-OF-SAMPLE (BASE ZERO ÚNICA)")
+                print("\n🔍 Calculando OUT-OF-SAMPLE (base zero no início da validação)")
 
                 available_assets = [asset for asset in optimized_assets if asset in df_completo.columns]
                 if len(available_assets) != len(optimized_assets):
                     print("⚠️ Nem todos os ativos disponíveis no período completo")
                     return None
 
-                optimizer_completo = PortfolioOptimizer(df_completo, available_assets,
-                                                        risk_free_column=self._coluna_referencia())
-
-                portfolio_returns_completo = np.dot(optimizer_completo.returns_data.values, optimized_weights)
-                cumulative_completo = np.cumsum(portfolio_returns_completo)
-
                 n_dias_otim = len(df_otim)
-                n_dias_total = len(df_completo)
-                n_dias_valid = n_dias_total - n_dias_otim
-
-                print(f"📊 Divisão do período completo:")
-                print(f"   Total: {n_dias_total} registros")
-                print(f"   Otimização: {n_dias_otim} registros")
-                print(f"   Validação: {n_dias_valid} registros")
-
-                if n_dias_valid <= 0:
+                n_pregoes_valid = len(df_completo) - n_dias_otim
+                if n_pregoes_valid <= 0:
                     print("⚠️ Período de validação muito curto")
                     return None
 
-                primeira_data_valid = pd.to_datetime(df_valid['Data'].iloc[0])
-                ultima_data_valid = pd.to_datetime(df_valid['Data'].iloc[-1])
-                n_dias_corridos_valid = (ultima_data_valid - primeira_data_valid).days + 1
+                # Níveis de preço relativos ao início da otimização: 1 + soma
+                # das peças base zero. O último dia da otimização é o dia-base
+                # da validação; dividir por ele recomeça a base zero ali — a
+                # validação parte do zero, e tudo sai por SUBTRAÇÃO na curva.
+                colunas = list(optimized_assets) + ([ref_step] if ref_step else [])
+                niveis = 1 + df_completo[colunas].astype(float).cumsum()
+                base = niveis.iloc[n_dias_otim - 1]
+                rel = niveis.iloc[n_dias_otim - 1:] / base - 1
 
-                print(f"\n📅 Período validação: {primeira_data_valid.strftime('%d/%m/%Y')} a {ultima_data_valid.strftime('%d/%m/%Y')}")
-                print(f"   Dias corridos: {n_dias_corridos_valid}")
+                pesos = np.asarray(optimized_weights, dtype=float)
+                if config.get('pesos_validacao') == 'atuais':
+                    # Pesos ATUAIS: os otimizados depois de andarem com os
+                    # preços até o fim da otimização (mesma conta da coluna
+                    # "Peso Atual" da aba Resultados).
+                    valores = pesos * base[list(optimized_assets)].values
+                    valor_long = valores[pesos > 0].sum()
+                    if valor_long > 0:
+                        pesos = valores / valor_long
+                print(f"   Pesos na validação: {config.get('pesos_validacao', 'otimizados')}")
 
-                portfolio_acum_fim_otim = cumulative_completo[n_dias_otim - 1]
-                portfolio_acum_fim_valid = cumulative_completo[-1]
+                curva = rel[list(optimized_assets)].values @ pesos          # começa em 0
+                retorno_periodo_valid = float(curva[-1])
+                retorno_anual_valid = anualizar(retorno_periodo_valid, n_pregoes_valid)
 
-                print(f"\n📊 RETORNO DO PORTFÓLIO (BASE ZERO ÚNICA):")
-                print(f"   Acumulado fim otimização: {portfolio_acum_fim_otim:.6f}")
-                print(f"   Acumulado fim validação: {portfolio_acum_fim_valid:.6f}")
-
-                retorno_periodo_valid = (1 + portfolio_acum_fim_valid) / (1 + portfolio_acum_fim_otim) - 1
-                print(f"   Retorno período validação: {retorno_periodo_valid:.4f} ({retorno_periodo_valid:.2%})")
-
-                if n_dias_corridos_valid > 0:
-                    retorno_anual_valid = (1 + retorno_periodo_valid) ** (365 / n_dias_corridos_valid) - 1
+                if ref_step:
+                    curva_ref = rel[ref_step].values
+                    taxa_periodo_valid = float(curva_ref[-1])
                 else:
-                    retorno_anual_valid = 0
-                print(f"   Retorno anualizado: {retorno_anual_valid:.4f} ({retorno_anual_valid:.2%})")
+                    curva_ref = np.zeros_like(curva)
+                    taxa_periodo_valid = 0.0
+                taxa_anual_valid = anualizar(taxa_periodo_valid, n_pregoes_valid)
+                excesso_periodo_valid = retorno_periodo_valid - taxa_periodo_valid
+                excesso_anual_valid = anualizar(excesso_periodo_valid, n_pregoes_valid)
 
-                if hasattr(optimizer_completo, 'risk_free_cumulative') and optimizer_completo.risk_free_cumulative is not None:
-                    try:
-                        taxa_acum_fim_otim = optimizer_completo.risk_free_cumulative.iloc[n_dias_otim - 1]
-                        taxa_acum_fim_valid = optimizer_completo.risk_free_cumulative.iloc[-1]
+                print(f"   Pregões de validação: {n_pregoes_valid}")
+                print(f"   Retorno período: {retorno_periodo_valid:.2%} | ao ano: {_pct(retorno_anual_valid)}")
+                print(f"   Referência período: {taxa_periodo_valid:.2%} | ao ano: {_pct(taxa_anual_valid)}")
+                print(f"   Excesso período: {excesso_periodo_valid:.2%} | ao ano: {_pct(excesso_anual_valid)}")
 
-                        print(f"\n📊 TAXA LIVRE DE RISCO (BASE ZERO ÚNICA):")
-                        print(f"   Acumulada fim otimização: {taxa_acum_fim_otim:.6f}")
-                        print(f"   Acumulada fim validação: {taxa_acum_fim_valid:.6f}")
+                # Família PU: variação diária (1 + curva hoje) / (1 + curva ontem),
+                # com o dia-base valendo 1, como na planilha (GW5).
+                cc = np.concatenate([[curva[0]], curva])
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    portfolio_returns_pct_valid = (1 + cc[1:]) / (1 + cc[:-1]) - 1
+                portfolio_returns_pct_valid = portfolio_returns_pct_valid[np.isfinite(portfolio_returns_pct_valid)]
+                vol_valid = float(np.std(portfolio_returns_pct_valid, ddof=0) * np.sqrt(252)) \
+                    if len(portfolio_returns_pct_valid) > 1 else 0.0
 
-                        taxa_periodo_valid = (1 + taxa_acum_fim_valid) / (1 + taxa_acum_fim_otim) - 1
-                        print(f"   Taxa período validação: {taxa_periodo_valid:.4f} ({taxa_periodo_valid:.2%})")
-
-                        if n_dias_corridos_valid > 0:
-                            taxa_anual_valid = (1 + taxa_periodo_valid) ** (365 / n_dias_corridos_valid) - 1
-                        else:
-                            taxa_anual_valid = 0
-                        print(f"   Taxa anualizada: {taxa_anual_valid:.4f} ({taxa_anual_valid:.2%})")
-                    except Exception as e:
-                        print(f"   Erro no cálculo da taxa: {e}")
-                        taxa_periodo_valid = 0
-                        taxa_anual_valid = 0
-                else:
-                    taxa_periodo_valid = 0
-                    taxa_anual_valid = 0
-                    print("   Taxa livre não disponível")
-
-                portfolio_cumulative_validacao = cumulative_completo[n_dias_otim:]
-
-                if len(portfolio_cumulative_validacao) > 1:
-                    portfolio_cumulative_validacao_completo = np.concatenate(
-                        [[portfolio_acum_fim_otim], portfolio_cumulative_validacao]
-                    )
-                    variac_result_pu = (1 + portfolio_cumulative_validacao_completo[1:]) / (1 + portfolio_cumulative_validacao_completo[:-1])
-                    portfolio_returns_pct_valid = variac_result_pu - 1
-                    vol_valid = np.std(portfolio_returns_pct_valid, ddof=0) * np.sqrt(252)
-                else:
-                    vol_valid = 0
-                    portfolio_returns_pct_valid = np.array([])
-
-                print(f"\n📊 VOLATILIDADE:")
-                print(f"   Volatilidade anualizada: {vol_valid:.4f} ({vol_valid:.2%})")
-
-                excesso_anual_valid = retorno_anual_valid - taxa_anual_valid
-                print(f"\n📊 PERFORMANCE:")
-                print(f"   Excesso anualizado: {excesso_anual_valid:.4f} ({excesso_anual_valid:.2%})")
-
-                if vol_valid > 0:
-                    sharpe_valid = excesso_anual_valid / vol_valid
-                else:
-                    sharpe_valid = 0
-                print(f"   Sharpe Ratio: {sharpe_valid:.3f}")
+                sharpe_valid = _sharpe_anual(retorno_anual_valid, taxa_anual_valid, vol_valid)
 
                 if len(portfolio_returns_pct_valid) > 0:
-                    mean_daily_return = np.mean(portfolio_returns_pct_valid)
-                    std_daily_return = np.std(portfolio_returns_pct_valid, ddof=0)
-                    var_95_daily_valid = mean_daily_return - 1.65 * std_daily_return
+                    var_95_daily_valid = float(np.mean(portfolio_returns_pct_valid)
+                                               - 1.65 * np.std(portfolio_returns_pct_valid, ddof=0))
+                    positive_return_pct = float(np.mean(portfolio_returns_pct_valid > 0))
                 else:
-                    var_95_daily_valid = 0
-                print(f"   VaR 95% diário: {var_95_daily_valid:.4f} ({var_95_daily_valid:.2%})")
+                    var_95_daily_valid = 0.0
+                    positive_return_pct = 0.0
 
-                if len(portfolio_returns_pct_valid) > 0:
-                    positive_returns = portfolio_returns_pct_valid[portfolio_returns_pct_valid > 0]
-                    total_returns = len(portfolio_returns_pct_valid)
-                    positive_return_pct = len(positive_returns) / total_returns if total_returns > 0 else 0
-                else:
-                    positive_return_pct = 0
-
-                print(f"\n✅ RESUMO OUT-OF-SAMPLE:")
-                print(f"   Retorno Total: {retorno_periodo_valid:.2%}")
-                print(f"   Sharpe: {sharpe_valid:.3f}")
+                print(f"   Volatilidade: {vol_valid:.2%} | Sharpe: {_num3(sharpe_valid)}")
 
                 return {
                     'n_assets': len(available_assets),
-                    'sharpe': sharpe_valid,
-                    'annual_return': retorno_anual_valid,
+                    'sharpe': sharpe_valid if sharpe_valid is not None else 0.0,
+                    'annual_return': retorno_anual_valid if retorno_anual_valid is not None else -1.0,
                     'volatility': vol_valid,
                     'positive_return_pct': positive_return_pct,
                     'total_return': retorno_periodo_valid,
-                    'risk_free_annual': taxa_anual_valid,
+                    'risk_free_annual': taxa_anual_valid if taxa_anual_valid is not None else 0.0,
                     'risk_free_period': taxa_periodo_valid,
                     'excess_annual': excesso_anual_valid,
                     'var_95': var_95_daily_valid,
-                    'n_days': n_dias_corridos_valid,
+                    'n_days': n_pregoes_valid,          # pregões de validação, contados
                     'meta_atingida': meta_ok_step
                 }
 
@@ -5721,7 +6066,7 @@ Isso ajuda a detectar:
 
         obj_names = {
             'sharpe': 'Sharpe', 'sortino': 'Sortino', 'volatility': 'MinRisco', 'under_water': 'MinUW',
-            'hc10': 'Inc/R²Vol', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso',
+            'sharpe_r2': 'Sharpe/R²', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso',
             'excess_sharpe': 'Sharpe.Exc'
         }
 

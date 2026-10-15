@@ -81,7 +81,7 @@ O link acima sempre aponta para a versão mais recente. [Link direto para o `.ex
 
 💡 O arquivo `optimizer.py` precisa estar na mesma pasta que `desktop_app_qt.py` para o programa funcionar corretamente.
 
-⚠️ Os módulos das fontes de dados (`cvm_fundos.py`, `b3_series_wide_com_limpeza.py`, `b3_excel_rendafixa.py`) também precisam estar **na mesma pasta**. Sem eles o aplicativo abre normalmente, mas o botão da fonte correspondente avisa o que está faltando.
+⚠️ Os módulos das fontes de dados (`cvm_fundos.py`, `b3_series_wide_com_limpeza.py`, `b3_excel_rendafixa.py`, `eventos_corporativos.py`, `tabela_fii_cnpj.py`) também precisam estar **na mesma pasta**. Sem eles o aplicativo abre normalmente, mas o botão (ou a opção) correspondente avisa o que está faltando.
 
 ## 1.5 Gerar o Executável (Windows)
 
@@ -212,6 +212,75 @@ A janela é parecida com a do Yahoo, com alguns campos próprios:
 ⚠️ O primeiro download de cada ano é **grande** (dezenas de MB) e pode levar de segundos a minutos — a janela pode parecer parada enquanto baixa cada ano. A barra de progresso avança a cada ano concluído.
 
 ⚠️ Requer a biblioteca **`requests`** (normalmente já instalada). Cobre bem ações e a maioria dos ETFs; para **ETFs de renda fixa** que a B3 não cobre bem, use a fonte via Excel abaixo.
+
+#### 🧮 Ajuste por eventos corporativos (opcional)
+
+O COTAHIST traz os preços **como foram negociados**. Num desdobramento de 1 para 4 o preço cai a um quarto de um dia para o outro; num dividendo, cai o valor pago. Para o otimizador, as duas coisas parecem perdas — e não são. Na janela da B3, o quadro **🧮 Ajuste por eventos corporativos** corrige isso:
+
+- **Ajustar desdobramentos, grupamentos e bonificações** — tira da série os saltos falsos (retorno de preço).
+- **Ajustar também os proventos (dividendos, JCP, rendimentos de FII)** — soma ao retorno o que foi pago, como se fosse reinvestido no próprio papel (**retorno total**). Só fica disponível com a primeira marcada.
+
+**Desmarcado (o padrão de fábrica), a importação é exatamente a de sempre.** A escolha fica gravada para as próximas vezes.
+
+**Como o ajuste é feito.** Para cada evento com data-com D, todos os preços até D (inclusive) são multiplicados por um fator; os preços depois de D não mudam — **o último preço da série continua sendo o real**. No desdobramento de 1 para 4 o fator é 0,25; num dividendo de 2% do preço, 0,98.
+
+**De onde vêm os eventos:**
+
+| Evento | Fonte |
+|---|---|
+| Desdobramentos, grupamentos e bonificações | Lista oficial da B3 (desde os anos 90) |
+| Desdobramentos que faltam na lista da B3 | O próprio COTAHIST (ver abaixo) |
+| Dividendos, JCP, restituições de capital (ações) | Histórico de proventos da B3 (desde 1996), já com o percentual sobre o preço da data-com |
+| Rendimentos e amortizações de FIIs, Fiagro e FIDC listados | Fundos.NET (avisos publicados pelos próprios fundos) + B3 (últimos ~12 meses) |
+| Rendimentos de FI-Infra e FIP | B3 (últimos ~12 meses); o histórico anterior, só com a opção de site não oficial — ver abaixo |
+| Ações antigas cotadas por lote de mil | Campo FATCOT do COTAHIST: tudo vira preço por ação |
+
+**Desdobramentos ausentes na lista da B3.** Acontece (os da Magazine Luiza em 2017 e 2019 não estão lá). O programa os encontra no COTAHIST quando três marcas aparecem no mesmo pregão: o número de distribuição muda (a B3 o muda exatamente no dia "ex"), a cotação salta x vezes (x = 2, 3, 4, 8, 10...) e a quantidade negociada passa a ser cerca de x vezes a de antes. Um tombo de mercado derruba o preço mas não multiplica a quantidade, e por isso não é confundido com desdobramento.
+
+**O relatório.** Ao final da importação abre-se uma janela com tudo o que foi ajustado, papel por papel: cada evento com data-com, descrição, fator e fonte, e o retorno do período **sem** e **com** ajuste. Dá para copiar ou salvar como `.txt`. Ela também mostra os **avisos** — por exemplo, um salto grande que não pôde ser explicado por nenhum evento ("confira se há evento faltando"). **Se a B3 não responder para algum papel, ele fica SEM ajuste e aparece em destaque** — nunca é ajustado pela metade em silêncio.
+
+**Tempo de download.** São consultas pequenas, feitas várias ao mesmo tempo: alguns segundos por papel na primeira vez. Para FIIs, é um aviso do Fundos.NET por mês do período (cerca de 36 em três anos), e o Fundos.NET costuma ser o mais lento. Durante a espera, a linha de andamento da janela mostra o que ainda está pendente (ex.: "aguardando HGLG11 12/37 avisos"), e o console registra o tempo de cada FII e as respostas lentas ou repetidas. Tudo fica guardado na pasta `cache_eventos`, dentro da **pasta dos dados de eventos**, e nas buscas seguintes só se baixa o que for novo — repetir a mesma importação no mesmo dia não consulta nada. São arquivos pequenos e não são apagados ao fechar.
+
+**Pasta dos dados de eventos.** O campo "📁 Pasta dos dados de eventos" (com **Procurar...**), no quadro do ajuste, define onde ficam o `cache_eventos` e o `fii_cnpj.csv`. O padrão é a pasta de dados do programa: a pasta do `.py`, ou `%APPDATA%\OtimizadorPortfolio` no executável. A escolha fica gravada; se a pasta deixar de existir (pendrive removido, por exemplo), o programa volta ao padrão. Apontar o `.py` e o `.exe` para a mesma pasta faz os dois compartilharem o cache e os CNPJs descobertos. Com o ajuste desmarcado, o campo fica desabilitado e a pasta não é usada.
+
+**FIIs, Fiagro e a tabela de CNPJs — mantida pelo próprio programa.** A B3 só guarda os rendimentos de FII dos últimos ~12 meses; os anteriores vêm do Fundos.NET, que é organizado por **CNPJ do fundo**. O programa já traz uma tabela com cerca de 440 FIIs (`tabela_fii_cnpj.py`). Quando aparece um FII que **não está nela**, o programa:
+
+1. procura, na lista de avisos de rendimento recentes de todos os FIIs no Fundos.NET, os do fundo com o mesmo nome de pregão da B3;
+2. baixa um desses avisos e **confere** que ele cita o código (ou o ISIN) do papel — um nome parecido nunca basta;
+3. usa o CNPJ do aviso e o **guarda** no arquivo `fii_cnpj.csv`, na pasta dos dados de eventos. Nas importações seguintes ele já está lá.
+
+O relatório mostra quando isso acontece ("ℹ️ FII fora da tabela: CNPJ ... encontrado no Fundos.NET e conferido"). Se o fundo não for achado (por exemplo, não distribuiu rendimentos nos últimos 5 meses), o relatório avisa que só os últimos 12 meses foram ajustados, e o programa tenta de novo depois de 30 dias. Por que não a CVM ou sites de terceiros: o cadastro de FII da CVM tem o código de negociação mal preenchido, e sites como o Clube FII podem mudar ou bloquear o acesso sem aviso; o Fundos.NET é a fonte oficial e é de onde o histórico vem de qualquer forma.
+
+Também é possível incluir um fundo à mão no mesmo `fii_cnpj.csv` (uma linha por fundo; ele tem prioridade sobre a tabela):
+
+```
+codigo;cnpj
+HGLG11;11728688000147
+```
+
+**Site não oficial (opcional, desligado de fábrica).** As fontes oficiais não têm o histórico de rendimentos de FI-Infra e FIP: a B3 guarda só ~12 meses e esses fundos não publicam no Fundos.NET. Para completar, a caixa **"Completar com site não oficial quando a fonte oficial não tiver o histórico"** (que só aparece com os proventos marcados) busca os proventos num site de terceiros. O padrão são dois endereços, tentados nesta ordem: o Carteira Falcão (`https://carteirafalcao.com.br/dividendos/`) e o BRFiis (`https://brfiis.com.br/fundos/`). O código do papel é acrescentado no fim de cada um, ou entra no lugar de `{ticker}`; os endereços são separados por `;`. O segundo só é consultado quando o primeiro não passa na conferência ou não cobre o período — o caso do XPIE11, cujas amortizações o Carteira Falcão não traz e o BRFiis traz. Outro site serve se mostrar uma tabela com as colunas "Data com" (ou "Data base") e "Valor".
+
+Regras, para que um site de terceiros não contamine o ajuste:
+- **Só tapa buracos:** é consultado apenas para os papéis que ficariam com os ~12 meses da B3. Ações, units, FIIs e Fiagro continuam só com as fontes oficiais.
+- **Conferência obrigatória:** os últimos 12 meses do site precisam bater com os da B3 — data e valor, com tolerância de 1 centavo pelo arredondamento — em pelo menos 90% das datas. Se o site chamar de "data com" a data ex (o Carteira Falcão faz isso), a conferência percebe e corrige. Se não bater (o XPIE11 no Carteira Falcão não traz as amortizações, por exemplo), o site é **ignorado** para aquele papel, o próximo da lista é tentado e o relatório diz por quê.
+- **Fonte visível:** no relatório, esses proventos aparecem como `[site: carteirafalcao.com.br]` (ou `[site: brfiis.com.br]`), com uma nota "FONTE NÃO OFICIAL" e o resultado da conferência.
+- **Respeito ao site:** o programa lê o `robots.txt` antes e não consulta páginas que ele proíba; lê a página do papel e, se a tabela for paginada (o BRFiis mostra 6 linhas por página), as seguintes com 1 s de pausa entre elas, só até alcançar o início do período; tudo fica guardado no cache.
+- **Termos de uso:** os termos do Carteira Falcão permitem usar os dados **para fins pessoais**; os do BRFiis não restringem o uso dos dados. Cabe a quem usa respeitar os termos do site escolhido. Não foram incluídos: o Radar FII e o Status Invest (os termos proíbem copiar os dados ou montar base com eles) e o Funds Explorer (a tabela é montada por JavaScript no navegador; a página não traz os dados).
+
+**Limites conhecidos:**
+- **Direitos de subscrição** não são ajustados (dependem de cada investidor exercer ou não).
+- **Cisões** (quando o acionista recebe ações de outra empresa, como a Getnet saindo do Santander em 2021) não são ajustadas: a queda do dia "ex" fica na série, e o relatório avisa com a data.
+- **Units** (TAEE11, KLBN11, SANB11, BPAC11...) usam os eventos e proventos que a B3 registra para a própria unit — não os das ações que a compõem, que podem ter sido diferentes (em 2014 o Santander agrupou as ações, mas o preço da unit não mudou).
+- **Proventos repetidos** na mesma data-com (ex.: três linhas iguais da Klabin em dez/2025) são tratados como **parcelas** e somados: é assim que a B3 registra um provento pago em várias vezes.
+- O JCP entra pelo valor **bruto** — como fazem a B3, o Yahoo e o Excel.
+- Bonificações pequenas (ex.: 5%) que faltem na lista da B3 não são detectadas pelo COTAHIST: um salto de 5% não se distingue de um pregão comum.
+- ETFs e BDRs: os desdobramentos são tratados; proventos, quando a B3 os tiver.
+- **FI-Infra (KDIF11, BDIF11, CDII11, JURO11, IFRA11...) e FIP (XPIE11...): pelas fontes oficiais, só os rendimentos dos últimos ~12 meses** são ajustados, e o relatório avisa (o histórico anterior só com a opção de site não oficial, acima). Esses fundos não publicam o aviso estruturado no Fundos.NET, e a B3 só guarda 12 meses. Foram investigados: (1) a página de eventos de fundos da B3 — usa a mesma consulta, 12 meses; (2) o informe diário da CVM — com o CNPJ certo, a queda da cota na data-com reproduz o rendimento com erro de ~0,1 ponto (CDII11 e JURO11), mas é uma estimativa, o CNPJ não pode ser descoberto automaticamente com segurança (muitos FI-Infra pagam ~1% no fim de cada mês) e o FIP não informa cota diária; (3) sites de terceiros — descartados por não serem fonte oficial. Fica em aberto até haver uma fonte definitiva.
+- Se a B3 não responder para um FII ou Fiagro cujo CNPJ é conhecido, ele ainda recebe os rendimentos do Fundos.NET (os desdobramentos ficam só com a detecção pelo COTAHIST), e o relatório avisa.
+
+**Comparação com o Excel (STOCKHISTORY).** O Excel ajusta corretamente desdobramentos, grupamentos e bonificações, mas **só ajusta proventos de 2024 em diante** (e ainda deixa passar alguns). De 2020 a 2026, isso deixa de fora cerca de 48 pontos percentuais do retorno de BBAS3 e de VIVT3. Com os proventos marcados, a importação da B3 dá o retorno total completo; nos desdobramentos, o resultado coincide com o do Excel.
+
+💡 Para conferir a conexão com a B3 fora do programa: `python eventos_corporativos.py PETR4 HGLG11` lista os eventos que a B3 devolve para esses papéis. Com `--descobrir`, os FIIs têm o CNPJ procurado no Fundos.NET como se não estivessem na tabela.
 
 ### Importar via Excel (renda fixa) — fonte complementar
 
@@ -350,16 +419,16 @@ Selecione um dos objetivos disponíveis pelo botão de rádio:
 
 | **Objetivo**                        | **Descrição**                                                                                                                          |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Maximizar Sharpe Ratio              | Maximiza o retorno excedente à taxa de referência por unidade de risco. Objetivo mais comum para carteiras balanceadas.                |
+| Maximizar Sharpe Ratio              | Maximiza o retorno excedente à taxa de referência por unidade de risco: (retorno anualizado − referência anualizada) ÷ volatilidade anualizada — o mesmo Sharpe exibido na aba Resultados. Objetivo mais comum para carteiras balanceadas. |
 | Maximizar Sortino Ratio             | Semelhante ao Sharpe, mas penaliza apenas a volatilidade de queda (downside). Não pune oscilações de alta — útil quando a preocupação é o risco de perda.  |
 | Minimizar Risco                     | Minimiza a volatilidade do portfólio independentemente do retorno. Ideal para perfis conservadores.                                    |
 | Minimizar Under Water               | Minimiza o **total de perdas acumuladas** do período — a soma de todos os retornos diários negativos. É uma medida de risco **assimétrica**: pune apenas queda, nunca oscilação de alta (ao contrário da volatilidade). Combina especialmente bem com a Meta de Retorno. |
-| Maximizar Inclinação/\[(1-R²)×Vol\] | Combina a inclinação com a qualidade da linearidade e a volatilidade. Penaliza ativos com retornos irregulares.                        |
-| Maximizar Qualidade da Linearidade  | Maximiza o R² da regressão do retorno acumulado. Prioriza ativos com comportamento linear e previsível.                                |
+| Maximizar Sharpe/(1-R²)             | Sharpe anualizado dividido por (1 − R²) da curva acumulada — a "Sharp / (1 - Rquad)" da planilha original. Premia risco-retorno **e** linearidade. Substituiu o antigo Inclinação/\[(1-R²)×Vol\], que em algumas bases não convergia. |
+| Maximizar Qualidade da Linearidade  | Maximiza o R² da regressão do retorno acumulado. Prioriza ativos com comportamento linear e previsível. Não depende da taxa de referência. |
 
 ### Objetivos com Taxa de Referência
 
-Os dois objetivos abaixo aparecem em uma seção separada e só ficam disponíveis quando há taxa de referência. Ambos trabalham sobre a curva do **excesso** (carteira − referência):
+Os dois objetivos abaixo aparecem em uma seção separada e só ficam disponíveis quando há taxa de referência **e não há posição vendida** (ver 6.3). Ambos trabalham sobre a curva do **excesso** (carteira − referência):
 
 | **Objetivo**                     | **Descrição**                                                                                                                        |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -506,6 +575,9 @@ Quando há posições short configuradas:
 - O otimizador distribui os 100% restantes entre os ativos long selecionados.
 - Os pesos negativos aparecem na composição do portfólio identificados como 'SHORT'.
 - O cálculo de 'Peso Atual' na tabela de composição considera apenas o valor das posições long para normalização.
+- **A referência deixa de ser descontada.** A curva da carteira (comprados − vendidos) já é o excesso; descontar a taxa de referência de novo contaria o índice duas vezes. Por isso, com posição vendida, a otimização e a aba Resultados tratam a carteira como **sem referência**: Sharpe e Sortino não descontam nada, e as linhas Taxa Ref e Excesso aparecem zeradas (o Excesso é igual ao Total). O gráfico mostra só a curva da carteira.
+- **Os objetivos com taxa de referência ficam indisponíveis** (Linearidade do Excesso e Sharpe do Excesso). Se um deles estava escolhido, o programa volta para 'Maximizar Sharpe Ratio'; ao desligar os vendidos, eles reaparecem.
+- A Auto-Otimização segue as mesmas duas regras (ver 10.2, Posições Vendidas).
 
 # 7\. Aba Ranking - Classificação de Ativos
 
@@ -552,6 +624,7 @@ O aviso aparece tanto ao calcular o ranking quanto ao iniciar a Auto-Otimizaçã
   - **📈 Peso Inclinação:** importância da tendência de alta relativa à referência. Maior peso favorece ativos com retorno consistentemente superior ao benchmark.
   - **📊 Peso Estabilidade:** importância da baixa volatilidade relativa. Maior peso favorece ativos que superam a referência de forma estável, sem grandes oscilações.
   - **🎯 Peso Correlação:** importância da correlação com a referência. Valores negativos de correlação podem indicar ativos com potencial de hedge.
+  - Padrão: Inclinação **0,33**, Estabilidade **1,00**, Correlação **0,60**.
 - Clique em **🔄 Calcular Ranking**. O resultado aparece na tabela com até 20 ativos exibidos.
 
 ## 7.3 Tabela de Resultados
@@ -619,22 +692,26 @@ Métricas calculadas sobre o período de treinamento (janela de otimização):
 | **Métrica**             | **Descrição**                                                         |
 | ----------------------- | --------------------------------------------------------------------- |
 | Retorno Total (%)       | Retorno acumulado do portfólio no período de otimização em base zero. |
-| Retorno Anualizado (%)  | Retorno total anualizado pela fórmula: (1 + R)^(365/dias) − 1.        |
+| Retorno Anualizado (%)  | Retorno total anualizado de forma composta em 252 pregões: (1 + R)^(252/pregões) − 1. |
 | Sharpe Ratio            | Excesso de retorno anualizado dividido pela volatilidade anualizada.  |
 | Volatilidade (%)        | Desvio padrão anualizado dos retornos diários (×√252).                |
 | VaR 95% Diário          | Value at Risk: perda máxima esperada em 95% dos dias (paramétrico).   |
 | CVaR 95% Diário         | Conditional VaR: perda média esperada além do VaR (tail risk).        |
 | R²                      | Qualidade da linearidade do retorno acumulado (regressão linear).     |
 | Taxa Ref Período (%)    | Retorno acumulado da taxa de referência no período.                   |
-| Taxa Ref Anualizada (%) | Taxa de referência anualizada.                                        |
-| Excesso Período (%)     | Retorno do portfólio menos o retorno da referência no período.        |
-| Excesso Anualizado (%)  | Retorno anualizado do portfólio menos a taxa de referência anualizada. |
+| Taxa Ref Anualizada (%) | Taxa de referência do período anualizada da mesma forma (252 pregões). |
+| Excesso Período (%)     | Curva do portfólio menos curva da referência (a curva verde do gráfico) no período. |
+| Excesso Anualizado (%)  | O Excesso Período anualizado a partir da própria curva do excesso: (1 + Excesso)^(252/pregões) − 1. |
 | Excesso/Ref (%)         | Excesso anualizado dividido pela taxa de referência anualizada: quanto o portfólio superou a referência em termos relativos (ex.: 50% = rendeu 50% a mais que a referência). |
-| Dias                    | Número de dias corridos no período de otimização.                     |
+| Pregões                 | Número de pregões do período (contados, sem o dia-base da base zero). |
 
 ## 8.2 Coluna OUT-OF-SAMPLE (Validação)
 
 As mesmas métricas calculadas para o período de validação, usando os MESMOS pesos otimizados na fase de treinamento. Este é o teste real de generalização do portfólio.
+
+Os resultados da validação saem **direto das curvas do gráfico**, por subtração: Total = curva do portfólio no fim da validação − curva no fim da otimização; o mesmo para a referência e para o excesso (curva verde). Assim, Total − Taxa Ref Período = Excesso Período, e uma carteira com a referência vendida a 100% mostra como Total exatamente o Excesso da mesma carteira com a referência. A anualização é a mesma do IN-SAMPLE (composta, 252 pregões contados). Volatilidade e VaR continuam pela variação diária em PU, (1 + curva hoje) / (1 + curva ontem).
+
+Quando a anualização não existe (perda acima de 100 pontos numa curva de excesso), o campo mostra **n/d**.
 
 💡 Se nenhuma janela de validação foi configurada (ou o período de validação é muito curto), esta coluna exibirá uma mensagem informativa. Configure uma data 'Fim da Análise' na aba Dados para ativar este painel.
 
@@ -701,7 +778,7 @@ A Auto-Otimização executa automaticamente centenas ou milhares de testes walk-
 
 🏆 **Os pesos do ranking também são os da aba Ranking** — Inclinação, Estabilidade e Correlação (seção 7.1). O que você ajustar lá é o que roda aqui, em cada step. O que a Auto-Otimização define por conta própria é apenas o **Score Min/Max**, que corta a lista já classificada.
 
-⚠️ **Corrigido na versão atual:** os três pesos ficavam **fixos em 0,33** dentro da Auto-Otimização, ignorando os controles da aba Ranking. Dava para ajustá-los, ver a ordem mudar na aba Ranking, rodar a Auto-Otimização e ela usar outra coisa — sem aviso. Como o padrão dos controles é exatamente 0,33 cada, **quem nunca os moveu obtém resultados idênticos aos de antes**; só muda para quem os ajustou.
+⚠️ **Corrigido na versão atual:** os três pesos ficavam **fixos em 0,33** dentro da Auto-Otimização, ignorando os controles da aba Ranking. Dava para ajustá-los, ver a ordem mudar na aba Ranking, rodar a Auto-Otimização e ela usar outra coisa — sem aviso. Na época o padrão dos controles era 0,33 cada; hoje é Inclinação 0,33, Estabilidade 1,00 e Correlação 0,60.
 
 ## 10.1 Conceito de Walk-Forward
 
@@ -760,13 +837,22 @@ Marque **'Habilitar posições short'** e clique em **📋 Selecionar Ativos par
 
 💡 Os candidatos a short são todos os ativos carregados (aba Dados). Em cada step, se um ativo short também tiver sido escolhido como long pelo ranking, ele é tratado apenas como short. Ativos short ausentes no período de um step são ignorados naquele step.
 
+Com posição vendida, a carteira (comprados − vendidos) já é o excesso: a referência **não é descontada** de novo (otimização, validação e Ref% zerada) e os objetivos do excesso ficam **indisponíveis**, como na otimização manual (ver 6.3).
+
 ### Configurações Globais
 
 | **Parâmetro**           | **Descrição**                                                                                                                                   |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Score Min / Max (0-100) | Intervalo do ranking de ativos. Ativos com índice fora deste intervalo são excluídos da otimização em cada step. Valor 0-100 = todos os ativos. |
-| Peso Min (%) / Max (%)  | Limites globais de peso aplicados em cada step da otimização.                                                                                   |
+| Score Min / Max (0-100) | Intervalo do ranking de ativos. Ativos com índice fora deste intervalo são excluídos da otimização em cada step. Valor 0-100 = todos os ativos. Padrão: **75 a 100**. |
+| Peso Min (%) / Max (%)  | Limites globais de peso aplicados em cada step da otimização. Padrão: **0% a 100%**. |
+| Pesos na Validação      | Com que pesos a validação de cada step começa. **Otimizados (Peso Inicial)**, o padrão: os calculados pela otimização do step — é o rebalanceamento. **Atuais (Peso Atual)**: os otimizados depois de andarem com os preços até o fim da otimização — a carteira segue sem rebalancear (para carteiras só compradas, dá os mesmos números das versões anteriores). A escolha fica gravada. |
 | Meta de Retorno         | Opcional. Marque 'Exigir meta' e escolha o modo: **% acima da ref.** (relativa) ou **% ao ano** (absoluta). A meta é aplicada **em cada step** do walk-forward — na relativa, contra a referência daquele período; na absoluta, convertida para os pregões daquela janela. O cumprimento por step é reportado na coluna **Meta%** da tabela de resultados. |
+
+### Como cada step é medido
+
+Cada step otimiza na sua janela (base zero no início dela) e, na validação, **recomeça a base zero no primeiro dia da validação**, com os pesos escolhidos acima. Os resultados saem direto das curvas, por subtração — carteira, referência e excesso partem do zero no mesmo dia —, sem divisões. Como cada validação é medida sobre o capital do início dela, os steps se encadeiam multiplicando (1 + retorno de cada step). Uma perda acima de 100% (possível com vendido) zera o capital.
+
+A anualização (do step e da configuração) é composta em **252 pregões contados** — a soma dos pregões de validação dos steps —, nunca por subtração de datas. As janelas (6 meses, 1 mês...) continuam sendo definidas em dias corridos.
 
 ## 10.3 Estimar e Executar
 
@@ -844,7 +930,7 @@ Para obter os melhores resultados, siga esta sequência:
 
 - Certifique-se de que não há datas duplicadas na planilha.
 - Ativos com dados faltantes no início do período serão automaticamente removidos. Se um ativo começou a ser negociado depois dos demais, inclua-o a partir de sua primeira data disponível ou remova-o da planilha.
-- Utilize sempre preços de fechamento (ou cotas) ajustados por proventos para evitar distorções nos retornos calculados.
+- Utilize sempre preços de fechamento (ou cotas) ajustados por proventos para evitar distorções nos retornos calculados. Na importação da B3, marque o **🧮 Ajuste por eventos corporativos** (seção 3.2.1).
 - Nomeie as colunas dos ativos com identificadores claros (ex.: ticker da bolsa) para facilitar a interpretação dos resultados.
 
 ## 12.2 Seleção de Janelas Temporais
@@ -874,7 +960,7 @@ Para obter os melhores resultados, siga esta sequência:
 
 ## 12.6 Robustez da Otimização (Multi-Start)
 
-Alguns objetivos não-lineares (como Inclinação/\[(1-R²)×Vol\] e Linearidade do Excesso) podem, em certas configurações, fazer o otimizador "travar" no ponto de partida e devolver uma carteira de **pesos iguais** (todos os ativos com o mesmo percentual). Para evitar isso, o solver detecta automaticamente esse travamento e reinicia a busca a partir de vários pontos aleatórios, ficando com o melhor resultado.
+Alguns objetivos não-lineares (como a Linearidade do Excesso) podem, em certas configurações, fazer o otimizador "travar" no ponto de partida e devolver uma carteira de **pesos iguais** (todos os ativos com o mesmo percentual). Para evitar isso, o solver detecta automaticamente esse travamento e reinicia a busca a partir de vários pontos aleatórios, ficando com o melhor resultado.
 
 - **Sinal de travamento (versões antigas):** se você vir todos os ativos com peso exatamente igual (ex.: todos com 1,67%), é sinal de que a otimização não convergiu. Com o multi-start isso é corrigido automaticamente.
 - **Custo:** o multi-start só é acionado quando há travamento, então otimizações que convergem normalmente não ficam mais lentas. Nos casos travados, a otimização pode demorar mais alguns segundos (especialmente com muitos ativos), pois testa vários reinícios.

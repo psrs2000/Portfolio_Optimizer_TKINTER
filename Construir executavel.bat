@@ -29,6 +29,8 @@ if not exist "optimizer.py" goto :faltaarquivo
 if not exist "cvm_fundos.py" goto :faltaarquivo
 if not exist "b3_series_wide_com_limpeza.py" goto :faltaarquivo
 if not exist "b3_excel_rendafixa.py" goto :faltaarquivo
+if not exist "eventos_corporativos.py" goto :faltaarquivo
+if not exist "tabela_fii_cnpj.py" goto :faltaarquivo
 if not exist "requirements.txt" goto :faltaarquivo
 if not exist "desktop_app_qt.spec" goto :faltaarquivo
 
@@ -85,6 +87,8 @@ echo     optimizer.py                 (motor de calculo)
 echo     cvm_fundos.py                (fonte CVM)
 echo     b3_series_wide_com_limpeza.py (fonte B3)
 echo     b3_excel_rendafixa.py        (fonte Excel)
+echo     eventos_corporativos.py      (ajuste por eventos, B3)
+echo     tabela_fii_cnpj.py           (CNPJ dos FIIs)
 echo     requirements.txt
 echo     desktop_app_qt.spec
 echo.
