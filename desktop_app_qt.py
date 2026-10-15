@@ -2293,7 +2293,7 @@ class PortfolioOptimizerGUI(QMainWindow):
             "Maximizar Sortino Ratio",
             "Minimizar Risco",
             "Minimizar Under Water",
-            "Maximizar Inclinação/[(1-R²)×Vol]",
+            "Maximizar Sharpe/(1-R²)",
             "Maximizar Qualidade da Linearidade"
         ]
         self.risk_free_objectives = [
@@ -4282,7 +4282,7 @@ class PortfolioOptimizerGUI(QMainWindow):
                 "Maximizar Sortino Ratio": 'sortino',
                 "Minimizar Risco": 'volatility',
                 "Minimizar Under Water": 'under_water',
-                "Maximizar Inclinação/[(1-R²)×Vol]": 'hc10',
+                "Maximizar Sharpe/(1-R²)": 'sharpe_r2',
                 "Maximizar Qualidade da Linearidade": 'quality_linear',
                 "Maximizar Linearidade do Excesso": 'excess_hc10',
                 "Maximizar Sharpe do Excesso": 'excess_sharpe'
@@ -4987,13 +4987,13 @@ Isso ajuda a detectar:
         obj_labels = {'sharpe': 'Maximizar Sharpe', 'sortino': 'Maximizar Sortino',
                       'volatility': 'Minimizar Risco',
                       'under_water': 'Minimizar Under Water',
-                      'hc10': 'Maximizar Inc/[(1-R²)×Vol]',
+                      'sharpe_r2': 'Maximizar Sharpe/(1-R²)',
                       'quality_linear': 'Qualidade da Linearidade',
                       'excess_hc10': 'Linearidade do Excesso',
                       'excess_sharpe': 'Sharpe do Excesso'}
         for key, default in [('sharpe', True), ('sortino', False),
                              ('volatility', False), ('under_water', False),
-                             ('hc10', False), ('quality_linear', False),
+                             ('sharpe_r2', False), ('quality_linear', False),
                              ('excess_hc10', False), ('excess_sharpe', False)]:
             cb = QCheckBox(obj_labels[key])
             cb.setChecked(default)
@@ -5465,7 +5465,7 @@ Isso ajuda a detectar:
 
         obj_mapping = {'sharpe': 'sharpe', 'sortino': 'sortino',
                        'volatility': 'volatility', 'under_water': 'under_water',
-                       'hc10': 'hc10', 'quality_linear': 'quality_linear',
+                       'sharpe_r2': 'sharpe_r2', 'quality_linear': 'quality_linear',
                        'excess_hc10': 'excess_hc10', 'excess_sharpe': 'excess_sharpe'}
 
         for otim_period in selected_otim:
@@ -5757,7 +5757,7 @@ Isso ajuda a detectar:
                 objective_map = {
                     'sharpe': 'sharpe', 'sortino': 'sortino',
                     'volatility': 'volatility', 'under_water': 'under_water',
-                    'hc10': 'hc10', 'quality_linear': 'quality_linear',
+                    'sharpe_r2': 'sharpe_r2', 'quality_linear': 'quality_linear',
                     'excess_hc10': 'excess_hc10', 'excess_sharpe': 'excess_sharpe'
                 }
 
@@ -6037,7 +6037,7 @@ Isso ajuda a detectar:
 
         obj_names = {
             'sharpe': 'Sharpe', 'sortino': 'Sortino', 'volatility': 'MinRisco', 'under_water': 'MinUW',
-            'hc10': 'Inc/R²Vol', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso',
+            'sharpe_r2': 'Sharpe/R²', 'quality_linear': 'Qualidade', 'excess_hc10': 'Lin.Excesso',
             'excess_sharpe': 'Sharpe.Exc'
         }
 

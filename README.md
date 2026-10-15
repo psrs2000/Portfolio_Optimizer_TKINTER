@@ -423,7 +423,7 @@ Selecione um dos objetivos disponíveis pelo botão de rádio:
 | Maximizar Sortino Ratio             | Semelhante ao Sharpe, mas penaliza apenas a volatilidade de queda (downside). Não pune oscilações de alta — útil quando a preocupação é o risco de perda.  |
 | Minimizar Risco                     | Minimiza a volatilidade do portfólio independentemente do retorno. Ideal para perfis conservadores.                                    |
 | Minimizar Under Water               | Minimiza o **total de perdas acumuladas** do período — a soma de todos os retornos diários negativos. É uma medida de risco **assimétrica**: pune apenas queda, nunca oscilação de alta (ao contrário da volatilidade). Combina especialmente bem com a Meta de Retorno. |
-| Maximizar Inclinação/\[(1-R²)×Vol\] | Combina a inclinação com a qualidade da linearidade e a volatilidade. Penaliza ativos com retornos irregulares.                        |
+| Maximizar Sharpe/(1-R²)             | Sharpe anualizado dividido por (1 − R²) da curva acumulada — a "Sharp / (1 - Rquad)" da planilha original. Premia risco-retorno **e** linearidade. Substituiu o antigo Inclinação/\[(1-R²)×Vol\], que em algumas bases não convergia. |
 | Maximizar Qualidade da Linearidade  | Maximiza o R² da regressão do retorno acumulado. Prioriza ativos com comportamento linear e previsível. Não depende da taxa de referência. |
 
 ### Objetivos com Taxa de Referência
@@ -950,7 +950,7 @@ Para obter os melhores resultados, siga esta sequência:
 
 ## 12.6 Robustez da Otimização (Multi-Start)
 
-Alguns objetivos não-lineares (como Inclinação/\[(1-R²)×Vol\] e Linearidade do Excesso) podem, em certas configurações, fazer o otimizador "travar" no ponto de partida e devolver uma carteira de **pesos iguais** (todos os ativos com o mesmo percentual). Para evitar isso, o solver detecta automaticamente esse travamento e reinicia a busca a partir de vários pontos aleatórios, ficando com o melhor resultado.
+Alguns objetivos não-lineares (como a Linearidade do Excesso) podem, em certas configurações, fazer o otimizador "travar" no ponto de partida e devolver uma carteira de **pesos iguais** (todos os ativos com o mesmo percentual). Para evitar isso, o solver detecta automaticamente esse travamento e reinicia a busca a partir de vários pontos aleatórios, ficando com o melhor resultado.
 
 - **Sinal de travamento (versões antigas):** se você vir todos os ativos com peso exatamente igual (ex.: todos com 1,67%), é sinal de que a otimização não convergiu. Com o multi-start isso é corrigido automaticamente.
 - **Custo:** o multi-start só é acionado quando há travamento, então otimizações que convergem normalmente não ficam mais lentas. Nos casos travados, a otimização pode demorar mais alguns segundos (especialmente com muitos ativos), pois testa vários reinícios.

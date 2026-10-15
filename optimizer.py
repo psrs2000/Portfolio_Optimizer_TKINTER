@@ -189,6 +189,24 @@ class PortfolioOptimizer:
 	    ref_anual = -1.0 if ref_anual is None else ref_anual
 	    return (anual - ref_anual) / vol
 
+    def _sharpe_sobre_1_menos_r2(self, weights, risk_free_rate=0.0):
+	    """
+	    Sharpe / (1 − R²): o Sharpe anualizado (o mesmo da aba Resultados)
+	    dividido por (1 − R²) da curva acumulada da carteira — a "Sharp /
+	    (1 - Rquad)" da planilha original. Premia risco-retorno E linearidade.
+
+	    É suave em todo o domínio (não tem as penalidades em degrau do antigo
+	    Inclinação/[(1−R²)×Vol], que deixavam o solver parado). (1 − R²) tem
+	    um piso minúsculo só para não dividir por zero numa reta perfeita.
+	    """
+	    # Uma passada só sobre os dados (a função roda milhares de vezes).
+	    curva = np.cumsum(np.dot(self.returns_data.values, np.asarray(weights)))
+	    pu = np.concatenate([[0.0], curva])
+	    vol = np.std((1 + pu[1:]) / (1 + pu[:-1]) - 1, ddof=0) * np.sqrt(252)
+	    sharpe = self._razao_anual(curva[-1], risk_free_rate, vol)
+	    _, r2 = self._lin_slope_r2(curva)
+	    return sharpe / max(1.0 - r2, 1e-9)
+
     def _lin_slope_r2(self, y):
 	    """
 	    Inclinação e R² da regressão linear de y contra o tempo (x = 0..N-1),
@@ -565,6 +583,11 @@ class PortfolioOptimizer:
         """
         
         def objective_function(weights):
+            if objective_type == 'sharpe_r2':
+                # asinh: mesma carteira ótima (é crescente), mas em escala
+                # moderada — sem ela o SLSQP perde precisão (valores ~1000
+                # e muito íngremes quando R² -> 1) e acusa falha à toa.
+                return -np.arcsinh(self._sharpe_sobre_1_menos_r2(weights, risk_free_rate))
             # Caminho ENXUTO para objetivos simples: calcula só o necessário,
             # sem VaR/CVaR/regressões. Acelera muito com muitos ativos.
             if objective_type in ('sharpe', 'sortino', 'under_water', 'volatility', 'return'):
@@ -827,6 +850,8 @@ class PortfolioOptimizer:
 
         def objective_function(weights_to_optimize):
             full_weights = _full_weights(weights_to_optimize)
+            if objective_type == 'sharpe_r2':
+                return -np.arcsinh(self._sharpe_sobre_1_menos_r2(full_weights, risk_free_rate))
 
             # Caminho ENXUTO para objetivos simples (ver optimize_portfolio)
             if objective_type in ('sharpe', 'sortino', 'under_water', 'volatility', 'return'):
