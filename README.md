@@ -577,7 +577,7 @@ Quando há posições short configuradas:
 - O cálculo de 'Peso Atual' na tabela de composição considera apenas o valor das posições long para normalização.
 - **A referência deixa de ser descontada.** A curva da carteira (comprados − vendidos) já é o excesso; descontar a taxa de referência de novo contaria o índice duas vezes. Por isso, com posição vendida, a otimização e a aba Resultados tratam a carteira como **sem referência**: Sharpe e Sortino não descontam nada, e as linhas Taxa Ref e Excesso aparecem zeradas (o Excesso é igual ao Total). O gráfico mostra só a curva da carteira.
 - **Os objetivos com taxa de referência ficam indisponíveis** (Linearidade do Excesso e Sharpe do Excesso). Se um deles estava escolhido, o programa volta para 'Maximizar Sharpe Ratio'; ao desligar os vendidos, eles reaparecem.
-- A Auto-Otimização ainda não segue essas duas regras.
+- A Auto-Otimização segue as mesmas duas regras (ver 10.2, Posições Vendidas).
 
 # 7\. Aba Ranking - Classificação de Ativos
 
@@ -836,13 +836,22 @@ Marque **'Habilitar posições short'** e clique em **📋 Selecionar Ativos par
 
 💡 Os candidatos a short são todos os ativos carregados (aba Dados). Em cada step, se um ativo short também tiver sido escolhido como long pelo ranking, ele é tratado apenas como short. Ativos short ausentes no período de um step são ignorados naquele step.
 
+Com posição vendida, a carteira (comprados − vendidos) já é o excesso: a referência **não é descontada** de novo (otimização, validação e Ref% zerada) e os objetivos do excesso ficam **indisponíveis**, como na otimização manual (ver 6.3).
+
 ### Configurações Globais
 
 | **Parâmetro**           | **Descrição**                                                                                                                                   |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Score Min / Max (0-100) | Intervalo do ranking de ativos. Ativos com índice fora deste intervalo são excluídos da otimização em cada step. Valor 0-100 = todos os ativos. |
 | Peso Min (%) / Max (%)  | Limites globais de peso aplicados em cada step da otimização.                                                                                   |
+| Pesos na Validação      | Com que pesos a validação de cada step começa. **Otimizados (Peso Inicial)**, o padrão: os calculados pela otimização do step — é o rebalanceamento. **Atuais (Peso Atual)**: os otimizados depois de andarem com os preços até o fim da otimização — a carteira segue sem rebalancear (para carteiras só compradas, dá os mesmos números das versões anteriores). A escolha fica gravada. |
 | Meta de Retorno         | Opcional. Marque 'Exigir meta' e escolha o modo: **% acima da ref.** (relativa) ou **% ao ano** (absoluta). A meta é aplicada **em cada step** do walk-forward — na relativa, contra a referência daquele período; na absoluta, convertida para os pregões daquela janela. O cumprimento por step é reportado na coluna **Meta%** da tabela de resultados. |
+
+### Como cada step é medido
+
+Cada step otimiza na sua janela (base zero no início dela) e, na validação, **recomeça a base zero no primeiro dia da validação**, com os pesos escolhidos acima. Os resultados saem direto das curvas, por subtração — carteira, referência e excesso partem do zero no mesmo dia —, sem divisões. Como cada validação é medida sobre o capital do início dela, os steps se encadeiam multiplicando (1 + retorno de cada step). Uma perda acima de 100% (possível com vendido) zera o capital.
+
+A anualização (do step e da configuração) é composta em **252 pregões contados** — a soma dos pregões de validação dos steps —, nunca por subtração de datas. As janelas (6 meses, 1 mês...) continuam sendo definidas em dias corridos.
 
 ## 10.3 Estimar e Executar
 
